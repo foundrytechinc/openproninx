@@ -34,6 +34,7 @@ KERN_OBJS := \
 	$(OBJDIR)/$(KERN_DIR)/file.o \
 	$(OBJDIR)/$(KERN_DIR)/fnustate.o \
 	$(OBJDIR)/$(KERN_DIR)/net/adapter.o \
+	$(OBJDIR)/$(KERN_DIR)/net/virtio_net.o \
 	$(OBJDIR)/$(KERN_DIR)/pipe.o \
 
 KERN_BINARY_OBJS := \

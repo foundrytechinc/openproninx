@@ -16,6 +16,7 @@ set +e
 timeout 12 "$qemu" -nographic -no-reboot \
   -drive "file=$kernel,index=0,media=disk,format=raw" \
   -drive "file=$filesystem,if=ide,index=1,media=disk,format=raw" \
+  -netdev user,id=proninx-net0 -device virtio-net-pci,netdev=proninx-net0 \
   >"$log" 2>&1
 status=$?
 set -e
@@ -26,4 +27,5 @@ if [ "$status" -ne 124 ]; then
   exit "$status"
 fi
 grep -F "FNU/PRONINX service supervisor" "$log" >/dev/null
+grep -F "NET: virtio-net interface vtnet0 ready" "$log" >/dev/null
 grep -F "Welcome to FNU/PRONINX" "$log" >/dev/null

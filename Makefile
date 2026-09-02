@@ -82,6 +82,7 @@ QEMUOPTS := $(QEMUOPTS)
 QEMU_SYSTEM_IMG := $(if $(strip $(UFS2_SYSTEM_IMG)),$(UFS2_SYSTEM_IMG),$(FS_IMG))
 QEMUOPTS += -drive file=$(PRONINX_IMG),index=0,media=disk,format=raw \
 			-drive file=$(QEMU_SYSTEM_IMG),if=ide,index=1,media=disk,format=raw \
+			-netdev user,id=proninx-net0 -device virtio-net-pci,netdev=proninx-net0 \
 			-serial mon:stdio -gdb tcp::$(GDBPORT) -smp $(CPUS)
 ifneq ($(strip $(UFS2_DATA_IMG)),)
 QEMUOPTS += -drive file=$(UFS2_DATA_IMG),if=ide,index=2,media=disk,format=raw

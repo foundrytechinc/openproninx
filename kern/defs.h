@@ -51,6 +51,10 @@ void fnustateinit(void);
 int fnustateread(struct inode *, char *, int);
 int fnustatewrite(struct inode *, char *, int);
 
+// virtio_net.c
+void virtio_net_init(void);
+void virtio_net_intr(void);
+
 // exec.c
 int exec(char *, char **);
 

@@ -10,6 +10,7 @@
 #define IRQ_TIMER 0
 #define IRQ_KBD 1
 #define IRQ_COM1 4
+#define IRQ_VIRTIO_NET 11
 #define IRQ_IDE_PRIMARY 14
 #define IRQ_IDE_SECONDARY 15
 #define IRQ_ERROR 19

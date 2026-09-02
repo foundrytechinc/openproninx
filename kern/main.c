@@ -34,6 +34,7 @@ int main(void) {
   storageinit(); // discover optional read-only FNU Data volume
   // startothers();   // start other processors
   kinit2();   // must come after startothers()
+  virtio_net_init(); // QEMU reference network device
   userinit(); // first user process
   mpmain();   // finish this processor's setup
 }
