@@ -3,6 +3,7 @@
 #include "mmu.h"
 #include "proc.h"
 #include "inc/product.h"
+#include "net/adapter.h"
 #include "x86.h"
 
 static void mpmain(void) __attribute__((noreturn));
@@ -22,6 +23,7 @@ int main(void) {
   consoleinit(); // console hardware
   uartinit();    // serial port
   fnustateinit(); // volatile local supervisor state
+  proninx_net_init(); // adapter boundary for the vendored network stack
   cprintf("\n%s %s\n%s\n%s\n\n", FNU_PRODUCT_NAME, FNU_PRODUCT_VERSION,
           FNU_PRODUCT_VENDOR, FNU_PRODUCT_EXPANSION);
   pinit();         // process table

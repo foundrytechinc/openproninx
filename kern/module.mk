@@ -33,6 +33,7 @@ KERN_OBJS := \
 	$(OBJDIR)/$(KERN_DIR)/log.o \
 	$(OBJDIR)/$(KERN_DIR)/file.o \
 	$(OBJDIR)/$(KERN_DIR)/fnustate.o \
+	$(OBJDIR)/$(KERN_DIR)/net/adapter.o \
 	$(OBJDIR)/$(KERN_DIR)/pipe.o \
 
 KERN_BINARY_OBJS := \
@@ -68,6 +69,10 @@ $(OBJDIR)/$(KERN_DIR)/%.o: $(KERN_DIR)/%.c
 $(OBJDIR)/$(KERN_DIR)/%.o: $(KERN_DIR)/%.S
 	@mkdir -p $(@D)
 	$(CC) -o $@ $(KERN_CFLAGS) -fno-pic -nostdinc -I. -c $<
+
+$(OBJDIR)/$(KERN_DIR)/net/%.o: $(KERN_DIR)/net/%.c
+	@mkdir -p $(@D)
+	$(CC) -o $@ $(KERN_CFLAGS) -fno-pic -nostdinc -I. -Ikern -Ikern/net -c $<
 
 $(OBJDIR)/$(KERN_DIR)/mkfs: $(KERN_DIR)/mkfs.c
 	$(CC) -std=c11 -Wall -Wextra -Wno-format -Wno-unused -Wno-address-of-packed-member -Werror -I. \

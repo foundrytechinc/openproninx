@@ -17,7 +17,8 @@ licenses.
 ## Delivery order
 
 1. Define the PRONINX network-interface, DMA-buffer, lock, timer and memory
-   adapter APIs. No FreeBSD internal kernel subsystem is imported.
+   adapter APIs. The initial interface and packet-I/O boundary is now in
+   `kern/net/adapter.*`; no FreeBSD internal kernel subsystem is imported.
 2. Implement a PRONINX VirtIO-net driver and test link, ARP, ICMP and packet
    loss in QEMU.
 3. Bind the imported mbuf, interface and IPv4/UDP paths to that adapter.
