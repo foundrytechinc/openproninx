@@ -3,14 +3,14 @@
 ## Boundary
 
 PRONINX retains its own boot path, memory manager, scheduler, VFS, drivers and
-userspace. The selected FreeBSD networking code will be a vendored protocol
-component, not an operating-system base. Its immutable source will live in
-`third_party/freebsd-net`; all adaptation is PRONINX-owned code in `kern/net`.
+userspace. FreeBSD networking code is a vendored protocol component, not an
+operating-system base. Its immutable source lives in `third_party/freebsd-net`;
+all adaptation is PRONINX-owned code in `kern/net`.
 
 ## Source provenance
 
-The first vendor import is pinned to FreeBSD revision
-`4aea6ea2eb400737837ff8d22c25688f88c7966c` and must be copied without local
+The initial vendor import is pinned to FreeBSD revision
+`4aea6ea2eb400737837ff8d22c25688f88c7966c` and was copied without local
 changes. See `THIRD_PARTY_NOTICES.md` for the selected directories and
 licenses.
 
