@@ -1,0 +1,49 @@
+#include "blockdev.h"
+#include "buf.h"
+#include "defs.h"
+#include "fs.h"
+
+// bread() is currently addressed in legacy filesystem blocks.  It is safe to
+// use it as a sector transport only while both sizes are identical.  Keep the
+// assumption explicit: a future VirtIO/NVMe transport can remove it without
+// changing UFS2's byte-oriented interface.
+#if BSIZE != FNU_BLOCKDEV_SECTOR_SIZE
+#error "blockdev requires a sector-addressed backing transport"
+#endif
+
+int blockdev_read(const struct blockdev *volume, uint64_t offset, void *dst,
+                  uint length) {
+  uint64_t absolute_lba;
+  char *out = dst;
+
+  if (volume == 0 || dst == 0)
+    return -1;
+  if (volume->sector_count > ~(uint64_t)0 / FNU_BLOCKDEV_SECTOR_SIZE)
+    return -1;
+  if (offset > volume->sector_count * FNU_BLOCKDEV_SECTOR_SIZE ||
+      (uint64_t)length >
+          volume->sector_count * FNU_BLOCKDEV_SECTOR_SIZE - offset)
+    return -1;
+
+  while (length > 0) {
+    struct buf *buffer;
+    uint in_sector = offset % FNU_BLOCKDEV_SECTOR_SIZE;
+    uint count = FNU_BLOCKDEV_SECTOR_SIZE - in_sector;
+
+    if (count > length)
+      count = length;
+    absolute_lba = volume->first_lba + offset / FNU_BLOCKDEV_SECTOR_SIZE;
+    // The current legacy buffer cache uses 32-bit sector addresses. Refuse a
+    // request that it cannot represent instead of truncating the address.
+    if (absolute_lba > 0xffffffffULL)
+      return -1;
+
+    buffer = bread(volume->device, (uint)absolute_lba);
+    memmove(out, buffer->data + in_sector, count);
+    brelse(buffer);
+    out += count;
+    offset += count;
+    length -= count;
+  }
+  return 0;
+}

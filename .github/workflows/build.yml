@@ -1,0 +1,55 @@
+name: Core build
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the legacy build toolchain
+        run: sudo apt-get update && sudo apt-get install -y build-essential binutils qemu-system-x86
+      - name: Build and boot-smoke images without mutating sources
+        run: make ci && make smoke
+      - name: Publish evaluation images
+        uses: actions/upload-artifact@v4
+        with:
+          name: fnu-proninx-core-images
+          path: obj/*.img
+          if-no-files-found: error
+      - name: Publish UFS2 system payload
+        uses: actions/upload-artifact@v4
+        with:
+          name: fnu-proninx-system-payload
+          path: obj/user
+          if-no-files-found: error
+
+  ufs2-system-image:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore compiled userspace
+        uses: actions/download-artifact@v4
+        with:
+          name: fnu-proninx-system-payload
+          path: obj/user
+      - name: Build and verify UFS2 system image in FreeBSD
+        uses: vmactions/freebsd-vm@v1
+        with:
+          usesh: true
+          run: |
+            chmod +x tools/build-ufs2-system.sh
+            ./tools/build-ufs2-system.sh obj/fnu-system.ufs
+            fsck_ffs -n obj/fnu-system.ufs
+      - name: Publish UFS2 system image
+        uses: actions/upload-artifact@v4
+        with:
+          name: fnu-proninx-ufs2-system
+          path: obj/fnu-system.ufs
+          if-no-files-found: error
