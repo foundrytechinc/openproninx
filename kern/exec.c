@@ -24,6 +24,8 @@ int exec(char *path, char **argv) {
     return -1;
   }
   ilock(ip);
+  if (!inode_access(ip, curproc->uid, 1))
+    goto bad;
 
   // Check ELF header
   if (readi(ip, (char *)&elf, 0, sizeof(elf)) != sizeof(elf)) {

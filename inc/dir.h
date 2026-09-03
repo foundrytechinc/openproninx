@@ -5,6 +5,10 @@
 
 // Directory is a file containing a sequence of dirent structures.
 #define DIRSIZ 14
+// Fixed-width legacy fs.img directory entries remain 14 bytes. Variable-size
+// directory formats use this separate VFS pathname buffer.
+#define MAXNAMLEN 255
+#define NAMEBUFSZ (MAXNAMLEN + 1)
 
 struct dirent {
   ushort inum;

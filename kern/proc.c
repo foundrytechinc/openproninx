@@ -74,6 +74,9 @@ static struct proc *allocproc(void) {
 found:
   p->state = EMBRYO;
   p->pid = nextpid++;
+  p->uid = 0;
+  p->gid = 0;
+  p->doas_grant = 0;
 
   release(&ptable.lock);
 
@@ -190,6 +193,9 @@ pid_t fork(void) {
   }
   np->sz = curproc->sz;
   np->parent = curproc;
+  np->uid = curproc->uid;
+  np->gid = curproc->gid;
+  np->doas_grant = curproc->doas_grant;
   *np->tf = *curproc->tf;
 
   // Clear %eax so that fork returns 0 in the child.
@@ -228,6 +234,11 @@ void exit(void) {
 
   if (curproc == initproc)
     panic("init exiting");
+
+  // Datagram handles are not VFS files, so release their bounded kernel
+  // queues explicitly before the process ID can be reused.
+  proninx_udp_process_exit(curproc->pid);
+  proninx_tcp_process_exit(curproc->pid);
 
   // Close all open files.
   for (fd = 0; fd < NOFILE; fd++) {
@@ -466,6 +477,7 @@ void forkret(void) {
       initlog(ROOTDEV);
     else
       initlog_readonly();
+    auth_init();
     initproc->cwd = namei("/");
   }
 

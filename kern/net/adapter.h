@@ -12,12 +12,14 @@ struct proninx_net_interface;
 // A driver owns transmission. The adapter retains no packet after this call.
 typedef int (*proninx_net_transmit_fn)(struct proninx_net_interface *,
                                        const void *, uint);
+typedef int (*proninx_net_receive_fn)(void *, const void *, uint);
 
 // This is deliberately a PRONINX type, rather than a FreeBSD ifnet. The
 // compatibility layer will translate only at the networking boundary.
 struct proninx_net_interface {
   char name[PRONINX_NET_NAME_MAX];
   uint mtu;
+  uchar hardware_address[6];
   proninx_net_transmit_fn transmit;
   void *driver_context;
 };
@@ -34,6 +36,8 @@ void proninx_net_init(void);
 int proninx_net_register(struct proninx_net_interface *);
 int proninx_net_receive(struct proninx_net_interface *, const void *, uint);
 int proninx_net_transmit(struct proninx_net_interface *, const void *, uint);
+int proninx_net_set_receive_handler(proninx_net_receive_fn, void *);
+struct proninx_net_interface *proninx_net_interface(void);
 void proninx_net_stats(struct proninx_net_stats *);
 
 #endif

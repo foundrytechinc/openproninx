@@ -2,6 +2,7 @@
 #include "fs.h"
 #include "file.h"
 #include "fat32.h"
+#include "ufs2.h"
 #include "inc/abi.h"
 #include "inc/dir.h"
 #include "inc/fcntl.h"
@@ -41,6 +42,10 @@ int64_t sys_getdents(void) {
     return -1;
 
   ilock(f->ip);
+  if (!inode_access(f->ip, myproc()->uid, 4)) {
+    iunlock(f->ip);
+    return -1;
+  }
   if (f->ip->fs_type == FS_FAT32) {
       char fat_buf[BSIZE];
       while (1) {
@@ -85,8 +90,31 @@ int64_t sys_getdents(void) {
           }
           if (n < BSIZE) break;
       }
+  } else if (f->ip->fs_type == FS_UFS2) {
+    char name[NAMEBUFSZ];
+    uint inum;
+    while (ufs2_readdir(storage_ufs2_volume(f->ip->dev), f->ip->inum,
+                        f->off / sizeof(struct dirent), &inum, name,
+                        sizeof(name)) == 0) {
+      int namelen = strlen(name);
+      int reclen = (19 + namelen + 1 + 7) & ~7;
+      if (p + reclen > count)
+        break;
+      lde.d_ino = inum;
+      lde.d_off = f->off + sizeof(struct dirent);
+      lde.d_reclen = (unsigned short)reclen;
+      lde.d_type = DT_UNKNOWN;
+      if (copyout(myproc()->pgdir, (uintptr_t)(buf + p), &lde, 19) < 0 ||
+          copyout(myproc()->pgdir, (uintptr_t)(buf + p + 19), name,
+                  namelen + 1) < 0)
+        break;
+      f->off += sizeof(struct dirent);
+      p += reclen;
+    }
   } else {
     while (f->off < f->ip->size) {
+      char name[DIRSIZ + 1];
+      int namelen;
       if (readi(f->ip, (char *)&de, f->off, sizeof(de)) != sizeof(de))
         break;
 
@@ -95,7 +123,11 @@ int64_t sys_getdents(void) {
         continue;
       }
 
-      int namelen = strlen(de.name);
+      for (namelen = 0; namelen < DIRSIZ && de.name[namelen] != '\0';
+           namelen++)
+        ;
+      memmove(name, de.name, namelen);
+      name[namelen] = '\0';
       int reclen = 8 + 8 + 2 + 1 + namelen + 1; // ino, off, reclen, type, name, null
       reclen = (reclen + 7) & ~7;               // 8-byte alignment
 
@@ -109,7 +141,7 @@ int64_t sys_getdents(void) {
 
       if (copyout(myproc()->pgdir, (uintptr_t)(buf + p), &lde, 19) < 0) // copy header
         break;
-      if (copyout(myproc()->pgdir, (uintptr_t)(buf + p + 19), de.name, namelen + 1) < 0)
+      if (copyout(myproc()->pgdir, (uintptr_t)(buf + p + 19), name, namelen + 1) < 0)
         break;
 
       f->off += sizeof(de);
@@ -213,7 +245,7 @@ int64_t sys_stat(void) {
 
 // Create the path new as a link to the same inode as old.
 int sys_link(void) {
-  char name[DIRSIZ], *new, *old;
+  char name[NAMEBUFSZ], *new, *old;
   struct inode *dp, *ip;
 
   if (argstr(0, &old) < 0 || argstr(1, &new) < 0) {
@@ -227,27 +259,50 @@ int sys_link(void) {
   }
 
   ilock(ip);
-  if (ip->fs_type == FS_UFS2) {
-    // FNU Data is read-only until the full UFS2 write and recovery path is
-    // implemented. Reject before touching link counts or directory records.
-    iunlockput(ip);
-    end_op();
-    return -1;
-  }
   if (ip->type == T_DIR) {
     iunlockput(ip);
     end_op();
     return -1;
   }
 
+  if ((dp = nameiparent(new, name)) == 0) {
+    iunlockput(ip);
+    end_op();
+    return -1;
+  }
+  ilock(dp);
+  if (!inode_access(dp, myproc()->uid, 3)) {
+    iunlockput(dp); iunlockput(ip); end_op(); return -1;
+  }
+  if (ip->fs_type == FS_UFS2) {
+    const struct ufs2_volume *volume = storage_ufs2_volume(ip->dev);
+    if (dp->fs_type != FS_UFS2 || dp->dev != ip->dev || volume == 0 ||
+        ip->ufs2_info.nlink == 0 || ip->ufs2_info.nlink == 0xffff) {
+      iunlockput(dp);
+      iunlockput(ip);
+      end_op();
+      return -1;
+    }
+    ip->ufs2_info.nlink++;
+    ip->nlink = ip->ufs2_info.nlink;
+    if (ufs2_write_inode(volume, ip->inum, &ip->ufs2_info) < 0 ||
+        ufs2_dirlink(volume, dp->inum, name, ip->inum, UFS2_DIRTYPE_REG) < 0) {
+      ip->ufs2_info.nlink--;
+      ip->nlink = ip->ufs2_info.nlink;
+      ufs2_write_inode(volume, ip->inum, &ip->ufs2_info);
+      iunlockput(dp);
+      iunlockput(ip);
+      end_op();
+      return -1;
+    }
+    iunlockput(dp);
+    iunlockput(ip);
+    end_op();
+    return 0;
+  }
   ip->nlink++;
   iupdate(ip);
   iunlock(ip);
-
-  if ((dp = nameiparent(new, name)) == 0) {
-    goto bad;
-  }
-  ilock(dp);
   if (dp->dev != ip->dev || dirlink(dp, name, ip->inum) < 0) {
     iunlockput(dp);
     goto bad;
@@ -276,6 +331,19 @@ static int isdirempty(struct inode *dp) {
   if (dp->fs_type == FS_FAT32) {
     return fat32_isdirempty(dp);
   }
+  if (dp->fs_type == FS_UFS2) {
+    const struct ufs2_volume *volume = storage_ufs2_volume(dp->dev);
+    char name[NAMEBUFSZ];
+    uint inum, index;
+    if (volume == 0)
+      return 0;
+    for (index = 0;
+         ufs2_readdir(volume, dp->inum, index, &inum, name, sizeof(name)) == 0;
+         index++)
+      if (namecmp(name, ".") != 0 && namecmp(name, "..") != 0)
+        return 0;
+    return 1;
+  }
 
   for (off = 2 * sizeof(de); off < dp->size; off += sizeof(de)) {
     if (readi(dp, (char *)&de, off, sizeof(de)) != sizeof(de)) {
@@ -291,7 +359,7 @@ static int isdirempty(struct inode *dp) {
 int sys_unlink(void) {
   struct inode *ip, *dp;
   struct dirent de;
-  char name[DIRSIZ], *path;
+  char name[NAMEBUFSZ], *path;
   uint off;
 
   if (argstr(0, &path) < 0)
@@ -305,11 +373,8 @@ int sys_unlink(void) {
 
   ilock(dp);
 
-  if (dp->fs_type == FS_UFS2) {
-    iunlockput(dp);
-    end_op();
-    return -1;
-  }
+  if (!inode_access(dp, myproc()->uid, 3))
+    goto bad;
 
   // Cannot unlink "." or "..".
   if (namecmp(name, ".") == 0 || namecmp(name, "..") == 0) {
@@ -320,6 +385,42 @@ int sys_unlink(void) {
     goto bad;
   }
   ilock(ip);
+
+  if (dp->fs_type == FS_UFS2) {
+    const struct ufs2_volume *volume = storage_ufs2_volume(dp->dev);
+    uint removed;
+    if (volume == 0 || ip->fs_type != FS_UFS2 ||
+        (ip->type == T_DIR && !isdirempty(ip)) ||
+        ufs2_dirunlink(volume, dp->inum, name, &removed) < 0 ||
+        removed != ip->inum || ip->ufs2_info.nlink == 0) {
+      iunlockput(ip);
+      goto bad;
+    }
+    if (ip->type == T_DIR) {
+      struct ufs2_inode parent;
+      if (ufs2_read_inode(volume, dp->inum, &parent) < 0 || parent.nlink < 1) {
+        iunlockput(ip);
+        goto bad;
+      }
+      parent.nlink--;
+      dp->ufs2_info = parent;
+      dp->nlink = parent.nlink;
+      if (ufs2_write_inode(volume, dp->inum, &parent) < 0) {
+        iunlockput(ip);
+        goto bad;
+      }
+    }
+    ip->ufs2_info.nlink--;
+    ip->nlink = ip->ufs2_info.nlink;
+    if (ufs2_write_inode(volume, ip->inum, &ip->ufs2_info) < 0) {
+      iunlockput(ip);
+      goto bad;
+    }
+    iunlockput(dp);
+    iunlockput(ip);
+    end_op();
+    return 0;
+  }
 
   if (ip->nlink < 1) {
     panic("unlink: nlink < 1");
@@ -361,16 +462,62 @@ bad:
 
 static struct inode *create(char *path, short type, short major, short minor) {
   struct inode *ip, *dp;
-  char name[DIRSIZ];
+  char name[NAMEBUFSZ];
 
   if ((dp = nameiparent(path, name)) == 0) {
     return 0;
   }
   ilock(dp);
-
-  if (dp->fs_type == FS_UFS2) {
+  if (!inode_access(dp, myproc()->uid, 3)) {
     iunlockput(dp);
     return 0;
+  }
+
+  if (dp->fs_type == FS_UFS2) {
+    const struct ufs2_volume *volume = storage_ufs2_volume(dp->dev);
+    uint inum = 0;
+    uint16_t mode;
+    uchar directory_type;
+
+    if ((ip = dirlookup(dp, name, 0)) != 0) {
+      iunlockput(dp);
+      ilock(ip);
+      if (type == T_FILE && ip->type == T_FILE)
+        return ip;
+      iunlockput(ip);
+      return 0;
+    }
+    if (type == T_FILE) {
+      mode = 0100644;
+      directory_type = UFS2_DIRTYPE_REG;
+    } else if (type == T_DIR) {
+      mode = 0040755;
+      directory_type = UFS2_DIRTYPE_DIR;
+    } else {
+      iunlockput(dp);
+      return 0;
+    }
+    if (volume == 0 || ufs2_alloc_inode(volume, mode, &inum) < 0 ||
+        (type == T_DIR && ufs2_make_directory(volume, inum, dp->inum) < 0) ||
+        ufs2_dirlink(volume, dp->inum, name, inum, directory_type) < 0) {
+      if (volume != 0 && inum >= UFS2_ROOT_INO)
+        ufs2_free_inode(volume, inum);
+      iunlockput(dp);
+      return 0;
+    }
+    if (type == T_DIR) {
+      struct ufs2_inode parent;
+      if (ufs2_read_inode(volume, dp->inum, &parent) == 0) {
+        parent.nlink++;
+        dp->ufs2_info = parent;
+        dp->nlink = parent.nlink;
+        ufs2_write_inode(volume, dp->inum, &parent);
+      }
+    }
+    ip = iget(dp->dev, inum);
+    iunlockput(dp);
+    ilock(ip);
+    return ip;
   }
 
   if (dp->fs_type == FS_FAT32) {
@@ -422,6 +569,9 @@ static struct inode *create(char *path, short type, short major, short minor) {
   ip->major = major;
   ip->minor = minor;
   ip->nlink = 1;
+  ip->uid = myproc()->uid;
+  ip->gid = myproc()->gid;
+  ip->mode = type == T_DIR ? 0755 : (type == T_DEVICE ? 0600 : 0644);
   iupdate(ip);
 
   if (type == T_DIR) { // Create . and .. entries.
@@ -452,6 +602,13 @@ int64_t sys_open(void) {
   if (argstr(0, &path) < 0 || argint(1, &omode) < 0)
     return -1;
 
+  // The supervisor command endpoint changes system-wide state.  It must not
+  // be writable by a regular account merely because devfs has no on-disk ACL.
+  if (((omode & O_WRONLY) || (omode & O_RDWR)) && myproc()->uid != 0 &&
+      ((strncmp(path, "/fnusvc.command", 16) == 0 && path[16] == 0) ||
+       (strncmp(path, "fnusvc.command", 15) == 0 && path[15] == 0)))
+    return -1;
+
   begin_op();
 
   if (omode & O_CREATE) {
@@ -461,11 +618,23 @@ int64_t sys_open(void) {
       return -1;
     }
   } else {
-    if ((ip = namei(path)) == 0) {
+  if ((ip = namei(path)) == 0) {
       end_op();
       return -1;
     }
     ilock(ip);
+    if (((omode & O_WRONLY) || (omode & O_RDWR)) &&
+        !inode_access(ip, myproc()->uid, 2)) {
+      iunlockput(ip);
+      end_op();
+      return -1;
+    }
+    if (!(omode & O_WRONLY) && !(omode & O_RDWR) &&
+        !inode_access(ip, myproc()->uid, 4)) {
+      iunlockput(ip);
+      end_op();
+      return -1;
+    }
     if (ip->type != T_FILE && ip->type != T_DIR && ip->type != T_DEVICE) {
       iunlockput(ip);
       end_op();
@@ -478,6 +647,15 @@ int64_t sys_open(void) {
     }
   }
 
+  if ((omode & O_TRUNC) && ip->fs_type == FS_UFS2) {
+    if (ufs2_truncate(storage_ufs2_volume(ip->dev), ip->inum,
+                      &ip->ufs2_info) < 0) {
+      iunlockput(ip);
+      end_op();
+      return -1;
+    }
+    ip->size = 0;
+  }
   sz = (size_t)ip->size;
 
   if ((f = filealloc()) == 0 || (fd = fdalloc(f)) < 0) {
@@ -545,11 +723,49 @@ int sys_chdir(void) {
     end_op();
     return -1;
   }
+  if (!inode_access(ip, curproc->uid, 1)) {
+    iunlockput(ip);
+    end_op();
+    return -1;
+  }
   iunlock(ip);
   iput(curproc->cwd);
   end_op();
   curproc->cwd = ip;
   return 0;
+}
+
+int64_t sys_chmod(void) {
+  char *path; int mode; struct inode *ip;
+  if (argstr(0, &path) < 0 || argint(1, &mode) < 0 || (mode & ~07777)) return -1;
+  begin_op();
+  if ((ip = namei(path)) == 0) { end_op(); return -1; }
+  ilock(ip);
+  if (myproc()->uid != 0 && myproc()->uid != ip->uid) {
+    iunlockput(ip); end_op(); return -1;
+  }
+  ip->mode = mode & 07777;
+  if (ip->fs_type == FS_UFS2) {
+    ip->ufs2_info.mode = (ip->ufs2_info.mode & 0170000) | ip->mode;
+    if (ufs2_write_inode(storage_ufs2_volume(ip->dev), ip->inum,
+                         &ip->ufs2_info) < 0) { iunlockput(ip); end_op(); return -1; }
+  } else iupdate(ip);
+  iunlockput(ip); end_op(); return 0;
+}
+
+int64_t sys_chown(void) {
+  char *path; int uid, gid; struct inode *ip;
+  if (myproc()->uid != 0 || argstr(0, &path) < 0 ||
+      argint(1, &uid) < 0 || argint(2, &gid) < 0 || uid < 0 || gid < 0) return -1;
+  begin_op();
+  if ((ip = namei(path)) == 0) { end_op(); return -1; }
+  ilock(ip); ip->uid = uid; ip->gid = gid;
+  if (ip->fs_type == FS_UFS2) {
+    ip->ufs2_info.uid = uid; ip->ufs2_info.gid = gid;
+    if (ufs2_write_inode(storage_ufs2_volume(ip->dev), ip->inum,
+                         &ip->ufs2_info) < 0) { iunlockput(ip); end_op(); return -1; }
+  } else iupdate(ip);
+  iunlockput(ip); end_op(); return 0;
 }
 
 int64_t sys_exec(void) {

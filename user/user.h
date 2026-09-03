@@ -33,6 +33,13 @@ int stat_path(const char *path, struct stat *buf);
 int chdir(const char *path);
 int dup(int oldfd);
 int getpid(void);
+int getuid(void);
+int login(const char *, const char *);
+int doas_auth(const char *);
+int setuid(int);
+int useradd(const char *, const char *, int);
+int passwd(const char *, const char *);
+int users(struct user_info *, int);
 void *sbrk(intptr_t increment);
 int sleep(int n);
 int open(const char *pathname, int flags);
@@ -49,11 +56,21 @@ int reboot(void);
 int procinfo(struct procinfo *pi, int capacity);
 int ioctl(int fd, uint64_t cmd, uint64_t arg);
 int getdents(int fd, struct linux_dirent64 *buf, int count);
+int setforeground(pid_t pid);
+int chmod(const char *path, int mode);
+int chown(const char *path, int uid, int gid);
+int ping(struct network_ping_request *request);
+int udp_open(void); int udp_bind(int, int); int udp_sendto(int, const void *, int, const struct network_endpoint *); int udp_recvfrom(int, void *, int, struct network_endpoint *, int); int udp_close(int);
+int netinfo(struct network_status *);
+int netconfig(struct network_ipv4_config *);
+int tcp_open(void); int tcp_bind(int, int); int tcp_listen(int); int tcp_accept(int, int); int tcp_connect(int, const struct network_endpoint *, int); int tcp_send(int, const void *, int); int tcp_recv(int, void *, int, int); int tcp_close(int);
+int dns_resolve(struct network_dns_request *);
 
 // library
 int printf(const char *fmt, ...);
 int dprintf(int fd, const char *fmt, ...);
 STD_WRAP(char *gets(char *buf, int max))
+int read_password(char *buf, int max);
 void *malloc(size_t nbytes);
 void free(void *ap);
 

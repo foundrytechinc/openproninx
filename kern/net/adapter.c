@@ -7,6 +7,8 @@
 
 static struct spinlock net_lock;
 static struct proninx_net_interface *registered_interface;
+static proninx_net_receive_fn receive_handler;
+static void *receive_context;
 static struct proninx_net_stats statistics;
 
 void proninx_net_init(void) {
@@ -33,6 +35,9 @@ int proninx_net_register(struct proninx_net_interface *interface) {
 
 int proninx_net_receive(struct proninx_net_interface *interface,
                         const void *frame, uint length) {
+  proninx_net_receive_fn handler;
+  void *context;
+  int result = -1;
   if (interface == 0 || frame == 0 || length == 0 ||
       length > PRONINX_NET_FRAME_MAX)
     return -1;
@@ -42,13 +47,19 @@ int proninx_net_receive(struct proninx_net_interface *interface,
     release(&net_lock);
     return -1;
   }
-  // Packet dispatch is intentionally deferred until the FreeBSD mbuf adapter
-  // is present. Account for the frame so driver validation can begin now.
   statistics.received_frames++;
   statistics.received_bytes += length;
-  statistics.dropped_frames++;
+  handler = receive_handler;
+  context = receive_context;
   release(&net_lock);
-  return 0;
+  if (handler != 0)
+    result = handler(context, frame, length);
+  if (result < 0) {
+    acquire(&net_lock);
+    statistics.dropped_frames++;
+    release(&net_lock);
+  }
+  return result;
 }
 
 int proninx_net_transmit(struct proninx_net_interface *interface,
@@ -80,4 +91,27 @@ void proninx_net_stats(struct proninx_net_stats *out) {
   acquire(&net_lock);
   *out = statistics;
   release(&net_lock);
+}
+
+int proninx_net_set_receive_handler(proninx_net_receive_fn handler,
+                                    void *context) {
+  if (handler == 0)
+    return -1;
+  acquire(&net_lock);
+  if (registered_interface == 0 || receive_handler != 0) {
+    release(&net_lock);
+    return -1;
+  }
+  receive_handler = handler;
+  receive_context = context;
+  release(&net_lock);
+  return 0;
+}
+
+struct proninx_net_interface *proninx_net_interface(void) {
+  struct proninx_net_interface *interface;
+  acquire(&net_lock);
+  interface = registered_interface;
+  release(&net_lock);
+  return interface;
 }

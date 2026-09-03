@@ -19,6 +19,13 @@ struct superblock;
 struct procinfo;
 struct ufs2_inode;
 struct ufs2_volume;
+int inode_access(struct inode *, uint, int);
+struct network_ping_request;
+struct network_endpoint;
+struct network_status;
+struct network_ipv4_config;
+struct network_dns_request;
+struct user_info;
 
 // bio.c
 void binit(void);
@@ -28,9 +35,11 @@ void brelse(struct buf *b);
 
 // blockdev.c
 int blockdev_read(const struct blockdev *, uint64_t, void *, uint);
+int blockdev_write(const struct blockdev *, uint64_t, const void *, uint);
 
 // ufs2.c
 int ufs2_probe(const struct blockdev *, struct ufs2_volume *);
+void ufs2_init(void);
 int ufs2_read_inode(const struct ufs2_volume *, uint, struct ufs2_inode *);
 int ufs2_read_direct(const struct ufs2_volume *, const struct ufs2_inode *,
                      uint, void *, uint);
@@ -45,6 +54,27 @@ void consoleintr(int (*)(void));
 void cprintf(char *, ...);
 void panic(char *) __attribute__((noreturn));
 int consoleioctl(struct inode *, uint64_t, uint64_t);
+void console_set_foreground(pid_t pid);
+
+// framebuffer.c
+uint32_t framebuffer_phys(void);
+uint framebuffer_size(void);
+void *framebuffer_virt(void);
+int framebuffer_available(void);
+uint32_t framebuffer_boot_tag(void);
+uint32_t framebuffer_boot_physical_base(void);
+uint framebuffer_boot_width(void);
+uint framebuffer_boot_height(void);
+uint framebuffer_boot_pitch(void);
+uint framebuffer_boot_bits_per_pixel(void);
+int framebuffer_initialization_error(void);
+uint framebuffer_width(void);
+uint framebuffer_height(void);
+uint framebuffer_columns(void);
+uint framebuffer_rows(void);
+void framebuffer_init(void);
+void framebuffer_draw_cell(int, ushort);
+void framebuffer_redraw_cells(const ushort *, int);
 
 // fnustate.c
 void fnustateinit(void);
@@ -54,6 +84,40 @@ int fnustatewrite(struct inode *, char *, int);
 // virtio_net.c
 void virtio_net_init(void);
 void virtio_net_intr(void);
+void virtio_net_poll(void);
+int virtio_net_handles_irq(int irq);
+
+// auth.c
+void auth_init(void);
+int auth_login(const char *, const char *, uint *, uint *);
+int auth_doas(uint, const char *);
+int auth_set_password(uint, const char *, const char *);
+int auth_add_user(const char *, const char *, int);
+int auth_user_info(int, struct user_info *);
+int auth_is_wheel(uint);
+
+// lwip.c
+void proninx_lwip_init(void);
+void proninx_lwip_timers(void);
+int proninx_lwip_ping(struct network_ping_request *);
+int proninx_udp_open(void);
+int proninx_udp_bind(int, ushort);
+int proninx_udp_sendto(int, const void *, uint, const struct network_endpoint *);
+int proninx_udp_recvfrom(int, void *, uint, struct network_endpoint *, uint);
+int proninx_udp_close(int);
+void proninx_udp_process_exit(pid_t);
+int proninx_lwip_status(struct network_status *);
+int proninx_lwip_configure(const struct network_ipv4_config *);
+int proninx_tcp_open(void);
+int proninx_tcp_bind(int, ushort);
+int proninx_tcp_listen(int);
+int proninx_tcp_accept(int, uint);
+int proninx_tcp_connect(int, const struct network_endpoint *, uint);
+int proninx_tcp_send(int, const void *, uint);
+int proninx_tcp_recv(int, void *, uint, uint);
+int proninx_tcp_close(int);
+void proninx_tcp_process_exit(pid_t);
+int proninx_dns_resolve(struct network_dns_request *);
 
 // exec.c
 int exec(char *, char **);

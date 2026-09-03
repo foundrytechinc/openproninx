@@ -32,6 +32,17 @@ int root_fs_type = FS_NATIVE;
 
 int fs_root_readonly(void) { return root_fs_type == FS_UFS2; }
 
+// mask: read=4, write=2, execute=1.  Root bypasses discretionary access.
+int inode_access(struct inode *ip, uint uid, int mask) {
+  uint bits;
+  if (ip == 0 || ip->type == 0) return 0;
+  if (uid == 0) return 1;
+  if (uid == ip->uid) bits = (ip->mode >> 6) & 7;
+  else if (myproc()->gid == ip->gid) bits = (ip->mode >> 3) & 7;
+  else bits = ip->mode & 7;
+  return (bits & (uint)mask) == (uint)mask;
+}
+
 // Read the super block.
 void readsb(int dev, struct superblock *sb) {
   struct buf *bp;
@@ -255,6 +266,9 @@ void iupdate(struct inode *ip) {
   dip->minor = ip->minor;
   dip->nlink = ip->nlink;
   dip->size = ip->size;
+  dip->uid = ip->uid;
+  dip->gid = ip->gid;
+  dip->mode = ip->mode;
   memmove(dip->addrs, ip->addrs, sizeof(ip->addrs));
   log_write(bp);
   brelse(bp);
@@ -362,9 +376,10 @@ void ilock(struct inode *ip) {
       if (ip->ufs2_info.size > 0xffffffffULL)
         goto invalid_ufs2_inode;
       ip->size = (uint)ip->ufs2_info.size;
-      ip->major = 0;
-      ip->minor = 0;
-      ip->nlink = 1;
+      ip->nlink = ip->ufs2_info.nlink;
+      ip->uid = ip->ufs2_info.uid;
+      ip->gid = ip->ufs2_info.gid;
+      ip->mode = ip->ufs2_info.mode & 07777;
       ip->fs_type = FS_UFS2;
       ip->valid = 1;
       return;
@@ -376,6 +391,9 @@ void ilock(struct inode *ip) {
     ip->minor = dip->minor;
     ip->nlink = dip->nlink;
     ip->size = dip->size;
+    ip->uid = dip->uid;
+    ip->gid = dip->gid;
+    ip->mode = dip->mode;
     memmove(ip->addrs, dip->addrs, sizeof(ip->addrs));
     brelse(bp);
     ip->valid = 1;
@@ -454,8 +472,14 @@ static void itrunc(struct inode *ip) {
   struct buf *bp;
   uint *a;
 
-  if (ip->fs_type == FS_UFS2)
+  if (ip->fs_type == FS_UFS2) {
+    const struct ufs2_volume *volume = storage_ufs2_volume(ip->dev);
+    if (volume != 0) {
+      ufs2_truncate(volume, ip->inum, &ip->ufs2_info);
+      ufs2_free_inode(volume, ip->inum);
+    }
     return;
+  }
   for (int i = 0; i < NDIRECT; i++) {
     if (ip->addrs[i]) {
       bfree(ip->dev, ip->addrs[i]);
@@ -519,10 +543,12 @@ void stati(struct inode *ip, struct stat *st) {
       st->device = ip->dev;
       st->type = ip->type;
       st->size = ip->size;
+      st->mode = ip->mode; st->uid = ip->uid; st->gid = ip->gid;
   } else {
       st->device = ip->dev;
       st->type = ip->type;
       st->size = ip->size;
+      st->mode = ip->mode; st->uid = ip->uid; st->gid = ip->gid;
   }
 }
 
@@ -764,15 +790,10 @@ static char *skipelem(char *path, char *name) {
     path++;
   }
   len = path - s;
-  if (len >= DIRSIZ) {
-    // The legacy pathname ABI gives us exactly DIRSIZ bytes. Reserve one for
-    // termination; consumers must never scan beyond this stack buffer.
-    memmove(name, s, DIRSIZ - 1);
-    name[DIRSIZ - 1] = 0;
-  } else {
-    memmove(name, s, len);
-    name[len] = 0;
-  }
+  if (len > MAXNAMLEN)
+    return 0;
+  memmove(name, s, len);
+  name[len] = 0;
   while (*path == '/') {
     path++;
   }
@@ -798,6 +819,8 @@ static char *data_namespace(char *path) {
 static int is_console_path(char *path) {
   if (path[0] == '/')
     path++;
+  if (strncmp(path, "dev/console", 12) == 0 && path[11] == '\0')
+    return 1;
   return path[0] == 'c' && path[1] == 'o' && path[2] == 'n' &&
          path[3] == 's' && path[4] == 'o' && path[5] == 'l' &&
          path[6] == 'e' && path[7] == '\0';
@@ -819,7 +842,7 @@ static uint devfs_path(char *path) {
 
 // Look up and return the inode for a path name.
 // If parent != 0, return the inode for the parent and copy the final
-// path element into name, which must have room for DIRSIZ bytes.
+// path element into name, which must have room for NAMEBUFSZ bytes.
 // Must be called inside a transaction since it calls iput().
 static struct inode *namex(char *path, int nameiparent, char *name) {
   struct inode *ip, *next;
@@ -845,6 +868,7 @@ static struct inode *namex(char *path, int nameiparent, char *name) {
         ip->size = 0xFFFFFFFF; // Directory size is unknown/large
         ip->fat32_info.attr = FAT32_ATTR_DIRECTORY;
         ip->type = T_DIR;
+        ip->nlink = 1;
         ip->valid = 1;
       }
       iunlock(ip);
@@ -860,6 +884,24 @@ static struct inode *namex(char *path, int nameiparent, char *name) {
     if (ip->type != T_DIR) {
       iunlockput(ip);
       return 0;
+    }
+    if (!inode_access(ip, myproc()->uid, 1)) {
+      iunlockput(ip);
+      return 0;
+    }
+    // Native directory entries have a fixed 14-byte name field and FAT32 is
+    // currently exposed through its short-name adapter.  Reject an overlong
+    // component there instead of letting namecmp() match a truncated prefix.
+    if (ip->fs_type != FS_UFS2 && strlen(name) > DIRSIZ) {
+      iunlockput(ip);
+      return 0;
+    }
+    // `.` names the inode being traversed.  Resolve it without consulting a
+    // filesystem-specific directory entry; this is also required for a child
+    // process whose cwd is a newly created directory.
+    if (!nameiparent && name[0] == '.' && name[1] == '\0') {
+      iunlock(ip);
+      continue;
     }
     if (nameiparent && *path == '\0') {
       // Stop one level early.
@@ -889,6 +931,10 @@ static struct inode *namex(char *path, int nameiparent, char *name) {
         next->fat32_info.attr = de.attr;
         next->fat32_info.parent_cluster = ip->fat32_info.cluster;
         next->fat32_info.dir_off = off;
+        next->nlink = 1;
+        next->uid = 0;
+        next->gid = 0;
+        next->mode = (de.attr & FAT32_ATTR_DIRECTORY) ? 0755 : 0644;
         next->valid = 1;
         if (de.attr & FAT32_ATTR_DIRECTORY)
           next->type = T_DIR;
@@ -913,7 +959,7 @@ static struct inode *namex(char *path, int nameiparent, char *name) {
 }
 
 struct inode *namei(char *path) {
-  char name[DIRSIZ];
+  char name[NAMEBUFSZ];
   return namex(path, 0, name);
 }
 

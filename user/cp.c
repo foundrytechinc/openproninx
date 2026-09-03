@@ -6,8 +6,8 @@ main(int argc, char *argv[])
   char buf[512];
   int fd_src, fd_dst, r, w;
 
-  if(argc <= 2){
-    printf("Usage: cp src dst\n");
+  if(argc != 3){
+    printf("Usage: cp <source> <destination>\n");
     exit();
   }
 

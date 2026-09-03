@@ -1,15 +1,15 @@
-# FNU/PRONINX storage architecture
+# FNU/OpenProninx storage architecture
 
 ## Decision
 
-FNU/PRONINX will use **UFS2/FFS** as the planned mutable
+FNU/OpenProninx will use **UFS2/FFS** as the planned mutable
 data filesystem. This preserves the BSD-family licensing direction while
 avoiding an in-house filesystem format and the licensing/complexity burden of
 ZFS or GPLv2 lwext4.
 
-This decision does not make the current native filesystem production-ready.
-The current xv6-derived filesystem remains the legacy boot/development
-filesystem until the UFS2 path passes its defined validation gates.
+This decision does not change the current native filesystem implementation.
+The xv6-derived filesystem remains the legacy boot filesystem until the UFS2
+path passes its defined validation gates.
 
 ## Volume roles
 
@@ -47,13 +47,17 @@ UFS2 volume and verifies the root inode and `.` directory record. It never
 attaches that volume to the legacy VFS and never writes it. The current image
 that boots `init` and PSH remains IDE device 1 and is untouched.
 
-When a valid FNU Data image is supplied, it is exposed read-only at `/data`.
-When a valid UFS2 system image replaces IDE device 1, it becomes the read-only
-root volume. The initial adapter supports regular files, directories, direct
-blocks and one level of indirect UFS2 blocks. The current PRONINX pathname ABI
-limits individual path components to
-13 ASCII bytes; long UFS2 names, symlinks, indirect blocks, writes and metadata
-updates remain deliberately unavailable until the VFS ABI is replaced.
+When a valid FNU Data image is supplied, it is exposed at `/data`.
+When a valid UFS2 system image replaces IDE device 1, it becomes the root
+volume. System images provide conventional top-level directories `/etc`,
+`/mount`, `/dev`, `/tmp`, `/usr` and `/home`; user programs live in `/usr/bin`.
+The initial adapter supports regular files, directories,
+direct blocks and one level of indirect UFS2 blocks. UFS2 names of up to 255
+bytes traverse the VFS and are returned through `getdents`; the legacy xv6
+filesystem retains its 13-byte component limit. The current UFS2 writer can
+create files and directories, write direct blocks, make and remove hard links,
+and remove empty directories. Symlinks, double/triple indirection and
+crash-safe metadata updates remain unavailable.
 
 For QEMU, attach a prepared raw UFS2 image as the optional device:
 
@@ -90,4 +94,5 @@ data device.
   cylinder-group metadata without a kernel panic.
 - Run interruption tests over create, write, rename and delete operations.
 - Verify recovery using the compatible FreeBSD `fsck_ffs` tool.
-- Review the imported code, build flags and SBOM before a production claim.
+- Review the imported code, build flags and SBOM before declaring writable UFS2
+  support complete.

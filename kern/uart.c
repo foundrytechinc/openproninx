@@ -35,7 +35,7 @@ void uartinit(void) {
   ioapicenable(IRQ_COM1, 0);
 
   // Announce that we're here.
-  for (p = "PRONINX...\n"; *p; p++) {
+  for (p = "OpenProninx...\n"; *p; p++) {
     uartputc(*p);
   }
 }

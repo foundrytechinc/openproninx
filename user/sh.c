@@ -1,11 +1,8 @@
-// PSH (PRONINX SHELL)
-
 #include "user/user.h"
 #include "inc/product.h"
 
 char current_dir[64] = "/";
 
-// Parsed command representation
 #define EXEC  1
 #define REDIR 2
 #define PIPE  3
@@ -50,7 +47,7 @@ struct backcmd {
   struct cmd *cmd;
 };
 
-int fork1(void);  // Fork but panics on failure.
+int fork1(void);
 void panic(char*) __attribute__((noreturn));
 struct cmd *parsecmd(char*);
 void runcmd(struct cmd*) __attribute__((noreturn));
@@ -114,7 +111,6 @@ static void service_command(char *command) {
   close(fd);
 }
 
-// Execute cmd.  Never returns.
 void
 runcmd(struct cmd *cmd)
 {
@@ -131,34 +127,25 @@ runcmd(struct cmd *cmd)
     if(ecmd->argv[0] == 0)
       exit();
     
-    // Try to run from current directory
     exec(ecmd->argv[0], ecmd->argv);
 
-    // If failed and not an absolute path, try running from root (/)
     if(ecmd->argv[0][0] != '/'){
       char path[64];
       path[0] = '/';
-      int i = 0;
-      while(ecmd->argv[0][i] && i < 62){
-        path[i+1] = ecmd->argv[0][i];
-        i++;
-      }
-      path[i+1] = 0;
-      exec(path, ecmd->argv);
-
-      // FNU system images keep executable payloads in /bin. Legacy images
-      // still work through the root-level fallback above.
-      path[0] = '/';
-      path[1] = 'b';
-      path[2] = 'i';
-      path[3] = 'n';
+      path[1] = 'u';
+      path[2] = 's';
+      path[3] = 'r';
       path[4] = '/';
-      i = 0;
-      while(ecmd->argv[0][i] && i < 58){
-        path[i+5] = ecmd->argv[0][i];
+      path[5] = 'b';
+      path[6] = 'i';
+      path[7] = 'n';
+      path[8] = '/';
+      int i = 0;
+      while(ecmd->argv[0][i] && i < 54){
+        path[i+9] = ecmd->argv[0][i];
         i++;
       }
-      path[i+5] = 0;
+      path[i+9] = 0;
       exec(path, ecmd->argv);
     }
 
@@ -211,10 +198,11 @@ int
 main(void)
 {
   static char buf[100];
-  int fd;
+  int fd, child;
 
-  // Ensure that three file descriptors are open.
-  while((fd = open("console", O_RDWR)) >= 0){
+  setforeground(0);
+
+  while((fd = open("/dev/console", O_RDWR)) >= 0){
     if(fd >= 3){
       close(fd);
       break;
@@ -236,7 +224,6 @@ main(void)
   printf("Welcome to %s %s!\n", FNU_PRODUCT_NAME, FNU_PRODUCT_VERSION);
   printf("Type 'help' for built-in commands.\n\n");
 
-  // Read and run input commands.
   while(getcmd(buf, sizeof(buf)) >= 0){
     char *cmd = buf;
     while (*cmd == ' ' || *cmd == '\t')
@@ -244,7 +231,6 @@ main(void)
     if (*cmd == '\n' || *cmd == 0)
       continue;
 
-    // Built-in command: help
     if(cmd[0] == 'h' && cmd[1] == 'e' && cmd[2] == 'l' && cmd[3] == 'p' && (cmd[4] == ' ' || cmd[4] == '\n' || cmd[4] == '\r' || cmd[4] == 0)){
       printf("PSH Built-in commands:\n");
       printf("  cd <dir>   - Change directory\n");
@@ -255,6 +241,7 @@ main(void)
       printf("  health     - Show latest local health observation\n");
       printf("  start|stop|restart health - Manage health service\n");
       printf("  reboot     - Restart this node\n");
+      printf("  logout     - End this session and return to login\n");
       printf("  help       - Show this message\n");
       continue;
     }
@@ -294,13 +281,18 @@ main(void)
       continue;
     }
 
-    // Built-in command: clear
+    // login execs this shell in its service process.  Exiting lets the
+    // supervisor reap that process and start a fresh login prompt.
+    if(command_is(cmd, "logout")) {
+      printf("Logging out...\n");
+      exit();
+    }
+
     if(cmd[0] == 'c' && cmd[1] == 'l' && cmd[2] == 'e' && cmd[3] == 'a' && cmd[4] == 'r' && (cmd[5] == ' ' || cmd[5] == '\n' || cmd[5] == '\r' || cmd[5] == 0)){
       printf("\033[2J\033[H");
       continue;
     }
 
-    // Built-in command: info
     if(cmd[0] == 'i' && cmd[1] == 'n' && cmd[2] == 'f' && cmd[3] == 'o' && (cmd[4] == ' ' || cmd[4] == '\n' || cmd[4] == '\r' || cmd[4] == 0)){
       printf("\033[33m");
       printf("       _/\\ \n");
@@ -317,16 +309,13 @@ main(void)
       continue;
     }
 
-    // Chdir must be called by the parent, not the child.
      if(cmd[0] == 'c' && cmd[1] == 'd' && (cmd[2] == ' ' || cmd[2] == '\n' || cmd[2] == '\r' || cmd[2] == 0)){
        char *dir = cmd + 2;
-       while(*dir == ' ') dir++;  // Skip spaces
+       while(*dir == ' ') dir++;
        
-       // Handle empty cd (go to root)
        if(*dir == '\n' || *dir == '\r' || *dir == 0){
          dir = "/";
        } else {
-         // Remove trailing newline
          char *end = dir;
          while(*end && *end != '\n' && *end != '\r') end++;
          *end = 0;
@@ -335,12 +324,9 @@ main(void)
        if(chdir(dir) < 0){
          dprintf(2, "cd: cannot change to %s\n", dir);
        } else {
-         // Update current_dir display with path normalization
          if(strncmp(dir, "..", 3) == 0){
-           // Go to parent directory
            int len = strlen(current_dir);
            if(len > 1){
-             // Find last /
              int i;
              for(i = len - 1; i >= 0; i--){
                if(current_dir[i] == '/'){
@@ -353,14 +339,11 @@ main(void)
              }
            }
          } else if(dir[0] == '/'){
-           // Absolute path - normalize ..
            safestrcpy(current_dir, dir, sizeof(current_dir));
            
-           // Simple .. resolution - remove /.. from end
            int len = strlen(current_dir);
            if(len >= 3 && current_dir[len-3] == '/' && current_dir[len-2] == '.' && current_dir[len-1] == '.'){
              current_dir[len-3] = 0;
-             // Find previous /
              int i;
              for(i = len - 4; i >= 0; i--){
                if(current_dir[i] == '/'){
@@ -373,7 +356,6 @@ main(void)
              }
            }
          } else {
-           // Simple relative path
            int len = strlen(current_dir);
            if(len > 0 && current_dir[len-1] != '/' && len < 62){
              current_dir[len++] = '/';
@@ -389,9 +371,12 @@ main(void)
        continue;
      }
 
-    if(fork1() == 0)
+    child = fork1();
+    if(child == 0)
       runcmd(parsecmd(buf));
+    setforeground(child);
     wait();
+    setforeground(0);
   }
   exit();
 }
@@ -413,8 +398,6 @@ fork1(void)
     panic("fork");
   return pid;
 }
-
-// Constructors
 
 struct cmd*
 execcmd(void)
@@ -481,7 +464,6 @@ backcmd(struct cmd *subcmd)
   return (struct cmd*)cmd;
 }
 
-// Parsing
 char whitespace[] = " \t\r\n\v";
 char symbols[] = "<|>&;()";
 
@@ -668,7 +650,6 @@ parseexec(char **ps, char *es)
   return ret;
 }
 
-// NUL-terminate all the counted strings.
 struct cmd*
 nulterminate(struct cmd *cmd)
 {

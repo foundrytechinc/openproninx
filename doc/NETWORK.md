@@ -24,9 +24,20 @@ licenses.
 3. Bind the imported mbuf, interface and IPv4/UDP paths to that adapter.
 4. Add TCP, IPv6, firewalling, routing and the PRONINX socket ABI with packet
    fuzzing and interoperability tests.
-5. Add a PRONINX driver for one certified production NIC with MSI-X, RSS,
+5. Add a PRONINX driver for one certified NIC with MSI-X, RSS,
    multiqueue DMA and NUMA-aware queue placement.
 
 The stack must be updated as a tracked vendor operation: pin an upstream
 revision, preserve all notices, review CVEs and run protocol, fuzz, throughput
 and p99-latency regression tests before release.
+
+## Current implementation
+
+The QEMU path includes a VirtIO-net reference driver and an lwIP binding with
+DHCP, ARP, IPv4, ICMP, UDP, TCP, and DNS support. Userspace tools include
+`ping`, `netinfo`, `netconfig`, `resolve`, `udpecho`, and `tcpecho`.
+
+UDP and TCP handles are process-owned kernel capabilities, but are not file
+descriptors because the VFS has no socket file type yet. The implementation is
+bounded to 8 UDP slots and 8 TCP slots with fixed receive queues. TLS, SSH,
+IPv6, firewalling, routing policy, and hardened remote access are absent.

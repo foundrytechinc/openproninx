@@ -26,13 +26,16 @@ struct inode {
 
   short type;            // Generic type (T_DIR, T_FILE, etc)
   uint size;             // File size in bytes
+  short nlink;           // Common cached link count; never overlaps fs data
+  uint uid;
+  uint gid;
+  ushort mode;
 
   enum { FS_NATIVE, FS_FAT32, FS_UFS2, FS_DEVFS } fs_type;
   union {
     struct {
       short major;
       short minor;
-      short nlink;
       uint addrs[NDIRECT + 2];
     }; // Anonymous struct for native specific fields
     struct {

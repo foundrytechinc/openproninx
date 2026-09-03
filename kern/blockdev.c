@@ -47,3 +47,42 @@ int blockdev_read(const struct blockdev *volume, uint64_t offset, void *dst,
   }
   return 0;
 }
+
+// This is deliberately a synchronous, raw write.  It is not a replacement
+// for a UFS2 transaction: a filesystem writer must update on-disk metadata in
+// a recoverable order before it can use this transport for normal operations.
+int blockdev_write(const struct blockdev *volume, uint64_t offset,
+                   const void *src, uint length) {
+  uint64_t absolute_lba;
+  const char *in = src;
+
+  if (volume == 0 || src == 0)
+    return -1;
+  if (volume->sector_count > ~(uint64_t)0 / FNU_BLOCKDEV_SECTOR_SIZE)
+    return -1;
+  if (offset > volume->sector_count * FNU_BLOCKDEV_SECTOR_SIZE ||
+      (uint64_t)length >
+          volume->sector_count * FNU_BLOCKDEV_SECTOR_SIZE - offset)
+    return -1;
+
+  while (length > 0) {
+    struct buf *buffer;
+    uint in_sector = offset % FNU_BLOCKDEV_SECTOR_SIZE;
+    uint count = FNU_BLOCKDEV_SECTOR_SIZE - in_sector;
+
+    if (count > length)
+      count = length;
+    absolute_lba = volume->first_lba + offset / FNU_BLOCKDEV_SECTOR_SIZE;
+    if (absolute_lba > 0xffffffffULL)
+      return -1;
+
+    buffer = bread(volume->device, (uint)absolute_lba);
+    memmove(buffer->data + in_sector, in, count);
+    bwrite(buffer);
+    brelse(buffer);
+    in += count;
+    offset += count;
+    length -= count;
+  }
+  return 0;
+}

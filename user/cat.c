@@ -21,7 +21,7 @@ int main(int argc, char *argv[]) {
   int fd, i;
 
   if (argc <= 1) {
-    cat(0);
+    dprintf(2, "Usage: cat <file>...\n");
     exit();
   }
 

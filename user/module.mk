@@ -6,9 +6,18 @@ UOBJS += \
 		 $(OBJDIR)/$(USER_DIR)/preemptiontest2 \
 		 $(OBJDIR)/$(USER_DIR)/fstest \
 		 $(OBJDIR)/$(USER_DIR)/sh \
+		 $(OBJDIR)/$(USER_DIR)/login \
+		 $(OBJDIR)/$(USER_DIR)/doas \
+		 $(OBJDIR)/$(USER_DIR)/whoami \
+		 $(OBJDIR)/$(USER_DIR)/users \
+		 $(OBJDIR)/$(USER_DIR)/useradd \
+		 $(OBJDIR)/$(USER_DIR)/adduser \
+		 $(OBJDIR)/$(USER_DIR)/passwd \
 		 $(OBJDIR)/$(USER_DIR)/ls \
 		 $(OBJDIR)/$(USER_DIR)/mkdir \
-		 $(OBJDIR)/$(USER_DIR)/cat \
+			 $(OBJDIR)/$(USER_DIR)/cat \
+			 $(OBJDIR)/$(USER_DIR)/chmod \
+			 $(OBJDIR)/$(USER_DIR)/chown \
 		 $(OBJDIR)/$(USER_DIR)/echo \
 		 $(OBJDIR)/$(USER_DIR)/ln \
 		 $(OBJDIR)/$(USER_DIR)/rm \
@@ -19,6 +28,14 @@ UOBJS += \
 		 $(OBJDIR)/$(USER_DIR)/ped \
 		 $(OBJDIR)/$(USER_DIR)/fnusvc \
 		 $(OBJDIR)/$(USER_DIR)/fnu-health \
+		 $(OBJDIR)/$(USER_DIR)/ping \
+		 $(OBJDIR)/$(USER_DIR)/netinfo \
+		 $(OBJDIR)/$(USER_DIR)/udpecho \
+		 $(OBJDIR)/$(USER_DIR)/netconfig \
+		 $(OBJDIR)/$(USER_DIR)/tcpecho \
+		 $(OBJDIR)/$(USER_DIR)/resolve \
+		 $(OBJDIR)/$(USER_DIR)/ntp \
+		 $(OBJDIR)/$(USER_DIR)/syslog \
 
 ULIBS := \
 	$(OBJDIR)/$(USER_DIR)/usys.o \

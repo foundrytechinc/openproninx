@@ -18,9 +18,9 @@ struct service {
 };
 
 static struct service services[] = {
-    {"fnu-health", "/bin/fnu-health", {"/bin/fnu-health", 0}, -1,
+    {"fnu-health", "/usr/bin/fnu-health", {"/usr/bin/fnu-health", 0}, -1,
      SERVICE_STOPPED, 0, 0},
-    {"sh", "/bin/sh", {"/bin/sh", 0}, -1, SERVICE_STOPPED, 0, 0},
+    {"login", "/usr/bin/login", {"/usr/bin/login", 0}, -1, SERVICE_STOPPED, 0, 0},
 };
 
 static int service_count = sizeof(services) / sizeof(services[0]);

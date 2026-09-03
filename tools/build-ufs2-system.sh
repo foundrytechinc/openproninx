@@ -1,5 +1,5 @@
 #!/bin/sh
-# Build an FNU/PRONINX immutable UFS2 system image on the host. This is release
+# Build an FNU/OpenProninx immutable UFS2 system image on the host. This is release
 # tooling, not part of the PRONINX kernel and not a filesystem implementation.
 set -eu
 
@@ -18,15 +18,23 @@ if ! command -v makefs >/dev/null 2>&1; then
   exit 1
 fi
 
-mkdir -p "$stage/bin" "$stage/etc" "$stage/usr" "$stage/var" "$stage/tmp"
-install -m 0555 "$root/obj/user/init" "$stage/init"
+mkdir -p "$stage/etc" "$stage/mount" "$stage/dev" "$stage/tmp" "$stage/home" \
+  "$stage/usr/bin" "$stage/var"
+# The kernel intercepts this path and supplies the console device. Keeping a
+# placeholder makes the device visible while listing the otherwise static
+# UFS2 image.
+: > "$stage/dev/console"
+: > "$stage/etc/passwd"
+install -m 0555 "$root/obj/user/init" "$stage/usr/bin/init"
 
-for program in fnusvc fnu-health sh ls mkdir cat echo ln rm wc cp top ped fstest \
-               preemptiontest1 preemptiontest2 vatest; do
-  install -m 0555 "$root/obj/user/$program" "$stage/bin/$program"
+for program in fnusvc fnu-health sh ls mkdir cat chmod chown echo ln rm wc cp top ped fstest \
+               preemptiontest1 preemptiontest2 vatest login doas whoami users useradd \
+               adduser passwd ping netinfo udpecho netconfig tcpecho resolve ntp syslog; do
+  install -m 0555 "$root/obj/user/$program" "$stage/usr/bin/$program"
 done
 
-# UFS2 system root: immutable; mutable service state belongs on FNU Data.
+# UFS2 system root is read-only at runtime; mutable service state belongs on
+# a separate FNU Data volume until the kernel has a crash-safe UFS2 writer.
 makefs -t ffs -o version=2,bsize=4096,fsize=512,label=FNU-SYSTEM \
   "$output" "$stage"
 echo "FNU UFS2 system image created: $output"

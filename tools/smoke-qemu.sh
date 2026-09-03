@@ -26,6 +26,7 @@ if [ "$status" -ne 124 ]; then
   cat "$log" >&2
   exit "$status"
 fi
-grep -F "FNU/PRONINX service supervisor" "$log" >/dev/null
+grep -F "FNU/OpenProninx service supervisor" "$log" >/dev/null
 grep -F "NET: virtio-net interface vtnet0 ready" "$log" >/dev/null
-grep -F "Welcome to FNU/PRONINX" "$log" >/dev/null
+grep -F "NET: lwIP 2.2.1 started on vtnet0; requesting DHCP lease" "$log" >/dev/null
+grep -F "Welcome to FNU/OpenProninx" "$log" >/dev/null

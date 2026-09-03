@@ -1,4 +1,8 @@
-COPYRIGHT for PRONINX.
+Third-party and upstream copyright notices for PRONINX.
+
+The project license is BSD 3-Clause; see `LICENSE`. The notices below remain
+applicable to the corresponding imported or derived material and must be
+retained in redistributions.
 
 Copyright (c) 2006-2018 Frans Kaashoek, Robert Morris, Russ Cox,
                         Massachusetts Institute of Technology

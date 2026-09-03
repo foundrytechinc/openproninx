@@ -138,22 +138,53 @@ void panic(char *s) {
 
 #define BACKSPACE 0x100
 #define CRTPORT 0x3d4
-static ushort *crt = (ushort *)P2V(0xb8000); // CGA memory
+/*
+ * VGA text memory cannot be read back while VBE graphics mode is active:
+ * QEMU returns 0xffff for its cells, which turns every framebuffer glyph
+ * into a solid white block.  Keep a RAM shadow for the framebuffer console;
+ * retain the hardware text buffer when VBE is unavailable.
+ */
+#define VGA_COLUMNS 80
+#define VGA_ROWS 25
+#define FB_MAX_COLUMNS 240
+#define FB_MAX_ROWS 67
+
+static ushort crt_shadow[FB_MAX_COLUMNS * FB_MAX_ROWS];
+static ushort *crt = (ushort *)P2V(0xb8000); // CGA memory or RAM shadow
+static int console_columns = VGA_COLUMNS;
+static int console_rows = VGA_ROWS;
+/*
+ * The VGA CRTC cursor belongs to the legacy text-mode display.  Once VBE is
+ * active, its value is a BIOS leftover and must not determine where the
+ * framebuffer console starts drawing.
+ */
+static int console_pos;
 
 // ANSI escape sequence state
 static int ansi_state = 0;
 static int ansi_params[8];
 static int ansi_nparams = 0;
 static ushort ansi_attr = 0x0700; // Default: grey on black
+static int framebuffer_dirty_cell = -1;
+static int framebuffer_cursor_cell = -1;
+static int framebuffer_needs_redraw;
 
 static void cgaputc(int c) {
   int pos;
 
-  // Cursor position: col + 80*row.
-  outb(CRTPORT, 14);
-  pos = inb(CRTPORT + 1) << 8;
-  outb(CRTPORT, 15);
-  pos |= inb(CRTPORT + 1);
+  framebuffer_dirty_cell = -1;
+  framebuffer_cursor_cell = -1;
+  framebuffer_needs_redraw = 0;
+
+  // Cursor position: col + console_columns*row.
+  if (framebuffer_available()) {
+    pos = console_pos;
+  } else {
+    outb(CRTPORT, 14);
+    pos = inb(CRTPORT + 1) << 8;
+    outb(CRTPORT, 15);
+    pos |= inb(CRTPORT + 1);
+  }
 
   if (ansi_state == 0) {
     if (c == 0x1b) { // ESC
@@ -195,30 +226,33 @@ static void cgaputc(int c) {
       } else if (c == 'J') { // ED - Erase in Display
         if (ansi_params[0] == 2) {
           // Clear entire screen
-          for (int i = 0; i < 80 * 25; i++)
+          for (int i = 0; i < console_columns * console_rows; i++)
             crt[i] = ' ' | ansi_attr;
           pos = 0;
+          framebuffer_needs_redraw = 1;
         }
       } else if (c == 'H' || c == 'f') { // CUP or HVP - Cursor Position
         int row = ansi_params[0] ? ansi_params[0] - 1 : 0;
         int col = ansi_params[1] ? ansi_params[1] - 1 : 0;
         if (row < 0) row = 0;
-        if (row >= 25) row = 24;
+        if (row >= console_rows) row = console_rows - 1;
         if (col < 0) col = 0;
-        if (col >= 80) col = 79;
-        pos = row * 80 + col;
+        if (col >= console_columns) col = console_columns - 1;
+        pos = row * console_columns + col;
       } else if (c == 'K') { // EL - Erase in Line
         int mode = ansi_params[0];
         if (mode == 0) { // Erase from cursor to end of line
-          for (int i = pos; i < (pos / 80 + 1) * 80; i++)
+          for (int i = pos; i < (pos / console_columns + 1) * console_columns; i++)
             crt[i] = ' ' | ansi_attr;
         } else if (mode == 1) { // Erase from start of line to cursor
-          for (int i = (pos / 80) * 80; i <= pos; i++)
+          for (int i = (pos / console_columns) * console_columns; i <= pos; i++)
             crt[i] = ' ' | ansi_attr;
         } else if (mode == 2) { // Erase entire line
-          for (int i = (pos / 80) * 80; i < (pos / 80 + 1) * 80; i++)
+          for (int i = (pos / console_columns) * console_columns;
+               i < (pos / console_columns + 1) * console_columns; i++)
             crt[i] = ' ' | ansi_attr;
         }
+        framebuffer_needs_redraw = 1;
       }
       ansi_state = 0;
       goto update_cursor;
@@ -226,35 +260,45 @@ static void cgaputc(int c) {
   }
 
   if (c == '\n') {
-    pos += 80 - pos % 80;
+    pos += console_columns - pos % console_columns;
   } else if (c == '\r') {
-    pos -= pos % 80;
+    pos -= pos % console_columns;
   } else if (c == BACKSPACE || c == '\b') {
     if (pos > 0) {
       --pos;
     }
   } else if (c >= ' ') {
+    framebuffer_dirty_cell = pos;
     crt[pos++] = (c & 0xff) | ansi_attr;
   }
 
-  if (pos < 0 || pos > 25 * 80) {
+  if (pos < 0 || pos > console_rows * console_columns) {
     panic("pos under/overflow");
   }
 
-  if ((pos / 80) >= 24) { // Scroll up.
-    memmove(crt, crt + 80, sizeof(crt[0]) * 23 * 80);
-    pos -= 80;
-    memset(crt + pos, 0, sizeof(crt[0]) * (24 * 80 - pos));
+  if ((pos / console_columns) >= console_rows) { // Scroll up.
+    memmove(crt, crt + console_columns,
+            sizeof(crt[0]) * (console_rows - 1) * console_columns);
+    pos -= console_columns;
+    memset(crt + pos, 0,
+           sizeof(crt[0]) * (console_rows * console_columns - pos));
     // Fill with current attribute
-    for (int i = pos; i < 24 * 80; i++)
+    for (int i = pos; i < console_rows * console_columns; i++)
       crt[i] = ' ' | ansi_attr;
+    framebuffer_needs_redraw = 1;
   }
 
 update_cursor:
-  outb(CRTPORT, 14);
-  outb(CRTPORT + 1, pos >> 8);
-  outb(CRTPORT, 15);
-  outb(CRTPORT + 1, pos);
+  if (framebuffer_available()) {
+    console_pos = pos;
+    /* crt[pos] below clears this cell, so redraw it as well. */
+    framebuffer_cursor_cell = pos;
+  } else {
+    outb(CRTPORT, 14);
+    outb(CRTPORT + 1, pos >> 8);
+    outb(CRTPORT, 15);
+    outb(CRTPORT + 1, pos);
+  }
   crt[pos] = ' ' | ansi_attr;
 }
 
@@ -273,6 +317,19 @@ void consputc(int c) {
     uartputc(c);
   }
   cgaputc(c);
+  if (framebuffer_available()) {
+    if (framebuffer_needs_redraw)
+      framebuffer_redraw_cells(crt, console_columns * console_rows);
+    else {
+      if (framebuffer_dirty_cell >= 0)
+        framebuffer_draw_cell(framebuffer_dirty_cell,
+                              crt[framebuffer_dirty_cell]);
+      if (framebuffer_cursor_cell >= 0 &&
+          framebuffer_cursor_cell != framebuffer_dirty_cell)
+        framebuffer_draw_cell(framebuffer_cursor_cell,
+                              crt[framebuffer_cursor_cell]);
+    }
+  }
 }
 
 #define INPUT_BUF 128
@@ -283,8 +340,15 @@ struct {
   uint w; // Write index
   uint e; // Edit index
 } input;
+static pid_t foreground_pid;
 
 #define C(x) ((x) - '@') // Control-x
+
+void console_set_foreground(pid_t pid) {
+  acquire(&cons.lock);
+  foreground_pid = pid;
+  release(&cons.lock);
+}
 
 void consoleintr(int (*getc)(void)) {
   int c, doprocdump = 0;
@@ -303,6 +367,19 @@ void consoleintr(int (*getc)(void)) {
         consputc(BACKSPACE);
       }
       break;
+    case C('C'):
+      while (input.e != input.w &&
+             input.buf[(input.e - 1) % INPUT_BUF] != '\n') {
+        input.e--;
+        consputc(BACKSPACE);
+      }
+      consputc('^');
+      consputc('C');
+      consputc('\n');
+      if (foreground_pid > 0)
+        kill(foreground_pid);
+      wakeup(&input.r);
+      break;
     case C('H'):
     case '\x7f': // Backspace
       if (input.e != input.w) {
@@ -316,12 +393,17 @@ void consoleintr(int (*getc)(void)) {
           input.buf[input.e++ % INPUT_BUF] = c;
           if (term.c_lflag & ECHO)
             consputc(c);
+          else if (term.c_lflag & ECHOPASS)
+            consputc('*');
           input.w = input.e;
           wakeup(&input.r);
         } else {
           c = (c == '\r') ? '\n' : c;
           input.buf[input.e++ % INPUT_BUF] = c;
-          consputc(c);
+          if (term.c_lflag & ECHOPASS && c != '\n')
+            consputc('*');
+          else if (term.c_lflag & ECHO || c == '\n')
+            consputc(c);
           if (c == '\n' || c == C('D') || input.e == input.r + INPUT_BUF) {
             input.w = input.e;
             wakeup(&input.r);
@@ -411,6 +493,17 @@ int consolewrite(struct inode *ip, char *buf, int n) {
 
 void consoleinit(void) {
   initlock(&cons.lock, "console");
+  if (framebuffer_available()) {
+    crt = crt_shadow;
+    console_columns = framebuffer_columns();
+    console_rows = framebuffer_rows();
+    console_pos = 0;
+    if (console_columns > FB_MAX_COLUMNS || console_rows > FB_MAX_ROWS)
+      panic("framebuffer console too large");
+    for (int i = 0; i < console_columns * console_rows; i++)
+      crt[i] = ' ' | ansi_attr;
+    framebuffer_redraw_cells(crt, console_columns * console_rows);
+  }
 
   devsw[CONSOLE].write = consolewrite;
   devsw[CONSOLE].read = consoleread;

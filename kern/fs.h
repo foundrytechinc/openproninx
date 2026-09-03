@@ -37,7 +37,14 @@ struct dinode {
   short minor;             // Minor device number (T_DEVICE only)
   short nlink;             // Number of links to inode in file system
   uint size;               // Size of file (bytes)
+  uint uid;                // Owner user ID
+  uint gid;                // Owner group ID
+  ushort mode;             // Permission bits
+  ushort pad;
   uint addrs[NDIRECT + 2]; // Data block addresses
+  // Keep native on-disk inodes block-aligned after adding ownership data.
+  // A 128-byte inode gives exactly four entries per 512-byte filesystem block.
+  uchar reserved[52];
 };
 
 // Inodes per block.

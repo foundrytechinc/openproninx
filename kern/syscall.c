@@ -137,6 +137,16 @@ extern int64_t sys_reboot(void);
 extern int64_t sys_procinfo(void);
 extern int64_t sys_ioctl(void);
 extern int64_t sys_getdents(void);
+extern int64_t sys_ping(void);
+extern int64_t sys_udp_open(void), sys_udp_bind(void), sys_udp_sendto(void), sys_udp_recvfrom(void), sys_udp_close(void);
+extern int64_t sys_netinfo(void);
+extern int64_t sys_netconfig(void);
+extern int64_t sys_tcp_open(void), sys_tcp_bind(void), sys_tcp_listen(void), sys_tcp_accept(void), sys_tcp_connect(void), sys_tcp_send(void), sys_tcp_recv(void), sys_tcp_close(void);
+extern int64_t sys_dns_resolve(void);
+extern int64_t sys_getuid(void), sys_login(void), sys_doas_auth(void);
+extern int64_t sys_setuid(void), sys_useradd(void), sys_passwd(void), sys_users(void);
+extern int64_t sys_setforeground(void);
+extern int64_t sys_chmod(void), sys_chown(void);
 
 static int64_t (*syscalls[])(void) = {
     [SYS_exit] = sys_exit,
@@ -167,6 +177,27 @@ static int64_t (*syscalls[])(void) = {
     [SYS_chdir] = sys_chdir,
     [SYS_getpid] = sys_getpid,
     [SYS_sleep] = sys_sleep,
+    [SYS_ping] = sys_ping,
+    [SYS_udp_open] = sys_udp_open, [SYS_udp_bind] = sys_udp_bind,
+    [SYS_udp_sendto] = sys_udp_sendto, [SYS_udp_recvfrom] = sys_udp_recvfrom,
+    [SYS_udp_close] = sys_udp_close,
+    [SYS_netinfo] = sys_netinfo,
+    [SYS_netconfig] = sys_netconfig,
+    [SYS_tcp_open] = sys_tcp_open, [SYS_tcp_bind] = sys_tcp_bind,
+    [SYS_tcp_listen] = sys_tcp_listen, [SYS_tcp_accept] = sys_tcp_accept,
+    [SYS_tcp_connect] = sys_tcp_connect, [SYS_tcp_send] = sys_tcp_send,
+    [SYS_tcp_recv] = sys_tcp_recv, [SYS_tcp_close] = sys_tcp_close,
+    [SYS_dns_resolve] = sys_dns_resolve,
+    [SYS_getuid] = sys_getuid,
+    [SYS_login] = sys_login,
+    [SYS_doas_auth] = sys_doas_auth,
+    [SYS_setuid] = sys_setuid,
+    [SYS_useradd] = sys_useradd,
+    [SYS_passwd] = sys_passwd,
+    [SYS_users] = sys_users,
+    [SYS_setforeground] = sys_setforeground,
+    [SYS_chmod] = sys_chmod,
+    [SYS_chown] = sys_chown,
 };
 
 void syscall(void) {

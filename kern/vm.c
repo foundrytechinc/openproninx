@@ -37,10 +37,13 @@ static struct kmap {
   uintptr_t phys_start;
   uintptr_t phys_end;
   int perm;
-} kmap[4];
+} kmap[5];
+static int nkmap;
 
 // Initialize kmap at runtime because V2P() cannot be used in static initializers.
 void init_kmap(void) {
+  uint32_t fb_phys;
+  uintptr_t fb_start, fb_end;
 
   // I/O space
   kmap[0].virt = (void *)KERNBASE;
@@ -64,6 +67,24 @@ void init_kmap(void) {
   kmap[3].phys_start = DEVSPACE_PHYS;
   kmap[3].phys_end = 0x100000000;
   kmap[3].perm = PTE_W;
+
+  nkmap = 4;
+  fb_phys = framebuffer_phys();
+  if (fb_phys) {
+    fb_start = PGROUNDDOWN((uintptr_t)fb_phys);
+    fb_end = PGROUNDUP((uintptr_t)fb_phys + framebuffer_size());
+
+    /* The final 32 MiB is already covered by the generic device mapping. */
+    if (fb_start < DEVSPACE_PHYS) {
+      if (fb_end > DEVSPACE_PHYS)
+        fb_end = DEVSPACE_PHYS;
+      kmap[nkmap].virt = DEVSPACE_P2V(fb_start);
+      kmap[nkmap].phys_start = fb_start;
+      kmap[nkmap].phys_end = fb_end;
+      kmap[nkmap].perm = PTE_W;
+      nkmap++;
+    }
+  }
 }
 
 // Set up CPU's kernel segment descriptors.
@@ -165,7 +186,7 @@ pte_t *setupkvm(void) {
   if (phys_top > DEVSPACE_PHYS) {
     panic("PHYSTOP too high");
   }
-  for (k = kmap; k < &kmap[NELEM(kmap)]; k++) {
+  for (k = kmap; k < &kmap[nkmap]; k++) {
     if (mappages(pgdir, k->virt, k->phys_end - k->phys_start,
                  (uint)k->phys_start, k->perm) < 0) {
       cprintf("setupkvm: mappages failed for 0x%p\n", k->virt);

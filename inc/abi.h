@@ -10,6 +10,50 @@ struct info {
   uint32 nprocs;           // Number of active processes
 };
 
+#define USER_NAME_MAX 16
+struct user_info {
+  char name[USER_NAME_MAX];
+  uint32 uid;
+  uint32 gid;
+  uint32 wheel;
+};
+
+struct network_ping_request {
+  uint8 address[4];
+  uint32 timeout_ms;
+  uint32 round_trip_ms;
+};
+
+struct network_endpoint { uint8 address[4]; uint16 port; };
+
+/* Set dhcp to zero for a static address; non-zero restarts DHCP. */
+struct network_ipv4_config {
+  uint8 address[4];
+  uint8 netmask[4];
+  uint8 gateway[4];
+  uint8 dns_server[4];
+  uint32 dhcp;
+};
+
+#define NETWORK_DNS_NAME_MAX 64
+struct network_dns_request {
+  char name[NETWORK_DNS_NAME_MAX];
+  uint8 address[4];
+  uint32 timeout_ms;
+};
+
+struct network_status {
+  char interface_name[16];
+  uint8 hardware_address[6];
+  uint8 address[4];
+  uint8 gateway[4];
+  uint8 dns_server[4];
+  uint32 dhcp_bound;
+  uint64 received_frames;
+  uint64 dropped_frames;
+  uint64 transmitted_frames;
+};
+
 struct procinfo {
   pointer_t pid;           // Process ID
   proc_state_t state;      // Process state
@@ -36,6 +80,7 @@ struct termios {
 
 #define ICANON 0000002
 #define ECHO   0000010
+#define ECHOPASS 0000020 // Echo password input as masking characters.
 
 enum procstate { UNUSED, EMBRYO, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
 

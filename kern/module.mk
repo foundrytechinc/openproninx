@@ -33,8 +33,35 @@ KERN_OBJS := \
 	$(OBJDIR)/$(KERN_DIR)/log.o \
 	$(OBJDIR)/$(KERN_DIR)/file.o \
 	$(OBJDIR)/$(KERN_DIR)/fnustate.o \
+	$(OBJDIR)/$(KERN_DIR)/auth.o \
 	$(OBJDIR)/$(KERN_DIR)/net/adapter.o \
 	$(OBJDIR)/$(KERN_DIR)/net/virtio_net.o \
+	$(OBJDIR)/$(KERN_DIR)/net/lwip/lwip.o \
+	$(OBJDIR)/third_party/lwip/src/core/def.o \
+	$(OBJDIR)/third_party/lwip/src/core/dns.o \
+	$(OBJDIR)/third_party/lwip/src/core/init.o \
+	$(OBJDIR)/third_party/lwip/src/core/inet_chksum.o \
+	$(OBJDIR)/third_party/lwip/src/core/ip.o \
+	$(OBJDIR)/third_party/lwip/src/core/mem.o \
+	$(OBJDIR)/third_party/lwip/src/core/memp.o \
+	$(OBJDIR)/third_party/lwip/src/core/netif.o \
+	$(OBJDIR)/third_party/lwip/src/core/pbuf.o \
+	$(OBJDIR)/third_party/lwip/src/core/raw.o \
+	$(OBJDIR)/third_party/lwip/src/core/stats.o \
+	$(OBJDIR)/third_party/lwip/src/core/sys.o \
+	$(OBJDIR)/third_party/lwip/src/core/tcp.o \
+	$(OBJDIR)/third_party/lwip/src/core/tcp_in.o \
+	$(OBJDIR)/third_party/lwip/src/core/tcp_out.o \
+	$(OBJDIR)/third_party/lwip/src/core/timeouts.o \
+	$(OBJDIR)/third_party/lwip/src/core/udp.o \
+	$(OBJDIR)/third_party/lwip/src/core/ipv4/dhcp.o \
+	$(OBJDIR)/third_party/lwip/src/core/ipv4/etharp.o \
+	$(OBJDIR)/third_party/lwip/src/core/ipv4/icmp.o \
+	$(OBJDIR)/third_party/lwip/src/core/ipv4/igmp.o \
+	$(OBJDIR)/third_party/lwip/src/core/ipv4/ip4.o \
+	$(OBJDIR)/third_party/lwip/src/core/ipv4/ip4_addr.o \
+	$(OBJDIR)/third_party/lwip/src/core/ipv4/ip4_frag.o \
+	$(OBJDIR)/third_party/lwip/src/netif/ethernet.o \
 	$(OBJDIR)/$(KERN_DIR)/pipe.o \
 
 KERN_BINARY_OBJS := \
@@ -73,7 +100,13 @@ $(OBJDIR)/$(KERN_DIR)/%.o: $(KERN_DIR)/%.S
 
 $(OBJDIR)/$(KERN_DIR)/net/%.o: $(KERN_DIR)/net/%.c
 	@mkdir -p $(@D)
-	$(CC) -o $@ $(KERN_CFLAGS) -fno-pic -nostdinc -I. -Ikern -Ikern/net -c $<
+	$(CC) -o $@ $(KERN_CFLAGS) -fno-pic -nostdinc -I. -Ikern -Ikern/net \
+		-Ikern/net/lwip/port/include -Ithird_party/lwip/src/include -c $<
+
+$(OBJDIR)/third_party/lwip/src/%.o: third_party/lwip/src/%.c
+	@mkdir -p $(@D)
+	$(CC) -o $@ $(KERN_CFLAGS) -fno-pic -nostdinc -I. -Ikern -Ikern/net \
+		-Ikern/net/lwip/port/include -Ithird_party/lwip/src/include -c $<
 
 $(OBJDIR)/$(KERN_DIR)/mkfs: $(KERN_DIR)/mkfs.c
 	$(CC) -std=c11 -Wall -Wextra -Wno-format -Wno-unused -Wno-address-of-packed-member -Werror -I. \

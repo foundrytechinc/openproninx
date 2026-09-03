@@ -1,4 +1,4 @@
-# Initial process execs /init.
+# Initial process execs /usr/bin/init.
 # This code runs in user space.
 
 #include "inc/syscall.h"
@@ -6,7 +6,7 @@
 
 .globl start
 start:
-# exec("/init", argv);
+# exec("/usr/bin/init", argv);
   lea init(%rip),%rax
   mov %rax,%rdi
   lea argv(%rip),%rax
@@ -21,7 +21,7 @@ exit:
   jmp exit
 
 init:
-  .string "/init\0"
+  .string "/usr/bin/init\0"
 
 .p2align 3
 argv:

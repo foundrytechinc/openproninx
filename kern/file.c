@@ -111,6 +111,19 @@ int filewrite(struct file *f, char *addr, int n) {
     return pipewrite(f->pipe, addr, n);
   }
   if (f->type == FD_INODE) {
+    if (f->ip->fs_type == FS_UFS2) {
+      if (n < 0 || f->off + (uint)n < f->off)
+        return -1;
+      ilock(f->ip);
+      r = ufs2_write_growing(storage_ufs2_volume(f->ip->dev), f->ip->inum,
+                             &f->ip->ufs2_info, f->off, addr, (uint)n);
+      if (r == 0) {
+        f->off += n;
+        f->ip->size = (uint)f->ip->ufs2_info.size;
+      }
+      iunlock(f->ip);
+      return r == 0 ? n : -1;
+    }
     // write a few blocks at a time to avoid exceeding
     // the maximum log transaction size, including
     // i-node, indirect block, allocation blocks,

@@ -58,13 +58,6 @@ set_target_operating_mode:
   int $0x15
   popf
 
-# See http://oswiki.osask.jp/?%28AT%29BIOS or 14-2 in 30 日 OS 自作入門
-# configure_video_mode:
-  mov $0x0,%ah
-  # mov $0x13,%al # 320x200 256 color graphics
-  mov $0x03,%al # 80x25 16 color text
-  int $0x10
-
 # check_int13h_extensions:
 #     mov $0x41,%ah
 #     mov $0x55aa,%bx
@@ -97,6 +90,10 @@ load_rest_of_bootloader_from_disk:
   # mov $0x80, %dl
   int $0x13
   jc rest_of_bootloader_load_failed
+
+  # The VBE setup code is in the just-loaded second part of the boot block.
+  # It falls back to BIOS 80x25 text mode when no suitable VBE mode exists.
+  call vbe_setup
 
 # print_test:
 #   mov $0x13,%ah

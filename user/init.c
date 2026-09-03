@@ -3,12 +3,12 @@
 // PID 1 deliberately has one responsibility: keep exactly one service
 // supervisor alive. It does not start individual services or an interactive
 // shell, so a failed supervisor cannot leave a second service tree behind.
-static char *supervisor_argv[] = {"/bin/fnusvc", 0};
+static char *supervisor_argv[] = {"/usr/bin/fnusvc", 0};
 
 int main(void) {
   pid_t pid;
 
-  if (open("console", O_RDWR) < 0) {
+  if (open("/dev/console", O_RDWR) < 0) {
     if (mknod("console", 1, 1) < 0 || open("console", O_RDWR) < 0) {
       // PID 1 cannot safely continue without its only recovery path.
       for (;;)
@@ -28,9 +28,8 @@ int main(void) {
       continue;
     }
     if (pid == 0) {
-      exec("/bin/fnusvc", supervisor_argv);
-      // Development images still place programs in /. Release UFS2 images
-      // use /bin and are always attempted first.
+      exec("/usr/bin/fnusvc", supervisor_argv);
+      // Keep the short-name fallback for development images.
       supervisor_argv[0] = "fnusvc";
       exec("fnusvc", supervisor_argv);
       printf("fnu-init: cannot exec fnusvc\n");

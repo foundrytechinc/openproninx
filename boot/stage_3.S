@@ -69,7 +69,7 @@ jump_to_long_mode:
     push $0x8
     mov kernel_entry,%eax
     push %eax
-    retf # Load CS with 64 bit segment and flush the instruction cache
+    lret # Load CS with 64 bit segment and flush the instruction cache
 
 spin64:
   hlt

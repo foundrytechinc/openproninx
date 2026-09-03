@@ -171,6 +171,9 @@ struct inode* fat32_ialloc(uint dev, short type) {
     ip->fat32_info.cluster = 0;
     ip->fat32_info.attr = (type == T_DIR) ? FAT32_ATTR_DIRECTORY : 0;
     ip->size = 0;
+    ip->uid = 0;
+    ip->gid = 0;
+    ip->mode = type == T_DIR ? 0755 : 0644;
     ip->valid = 1;
     return ip;
 }

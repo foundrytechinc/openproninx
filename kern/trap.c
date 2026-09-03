@@ -48,6 +48,10 @@ void trap(struct trapframe *tf) {
       ticks++;
       wakeup(&ticks);
       release(&tickslock);
+      // Legacy PCI INTx routing is firmware-dependent.  Polling used rings
+      // provides a bounded (10 ms) fallback while preserving the IRQ path.
+      virtio_net_poll();
+      proninx_lwip_timers();
     }
     lapiceoi();
     break;
@@ -71,11 +75,6 @@ void trap(struct trapframe *tf) {
     lapiceoi();
     break;
 
-  case T_IRQ0 + IRQ_VIRTIO_NET:
-    virtio_net_intr();
-    lapiceoi();
-    break;
-
     // case T_IRQ0 + 7:
     // case T_IRQ0 + IRQ_SPURIOUS:
     //   cprintf("cpu%d: spurious interrupt at %x:%x\n",
@@ -84,6 +83,14 @@ void trap(struct trapframe *tf) {
     //   break;
 
   default:
+    // VirtIO uses the PCI interrupt line assigned by firmware/QEMU.  It is
+    // commonly IRQ 11, but is not architecturally fixed.
+    if (tf->trapno >= T_IRQ0 && tf->trapno < T_IRQ0 + IRQ_SPURIOUS &&
+        virtio_net_handles_irq(tf->trapno - T_IRQ0)) {
+      virtio_net_intr();
+      lapiceoi();
+      break;
+    }
     if (myproc() == NULL || (tf->cs & 3) == 0) {
       // In kernel, it must be our mistake.
       cprintf("unexpected trap %d from cpu %d rip %x (cr2=0x%x)\n", tf->trapno,

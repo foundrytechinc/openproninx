@@ -1,126 +1,171 @@
-# Try to infer the correct QEMU
-ifndef QEMU
-	QEMU = qemu-system-x86_64
-	# QEMU = qemu-system-i386
-endif
+# PRONINX build file for BSD make (bmake).
 
-OBJDIR := obj
+OBJDIR?=obj
+.OBJDIR: ${.CURDIR}
+CC=clang
+LD?=ld
+AR?=ar
+OBJCOPY?=objcopy
+OBJDUMP?=objdump
+QEMU?=qemu-system-x86_64
+GDB?=gdb
+QEMU_VIDEO_OPTS?=-vga std -global VGA.vgamem_mb=16
+# A console does not benefit from a full-HD canvas: it leaves most of the
+# display empty and makes the QEMU window unnecessarily large.  Callers may
+# still override these limits for a different display mode.
+VBE_MAX_WIDTH?=1024
+VBE_MAX_HEIGHT?=768
+CPUS?=1
+.if ${CPUS} != 1
+.error SMP is not implemented: build and run with CPUS=1
+.endif
 
-CC = gcc
-AS = gas
-LD = ld
-OBJCOPY = objcopy
-OBJDUMP = objdump
-CP = cp
-DD = dd
-MKDIR = mkdir
-GDB = gdb
-AR = ar
+CFLAGS+=-fno-pic -static -fno-builtin -fno-strict-aliasing -MD -ggdb
+CFLAGS+=-fno-asynchronous-unwind-tables -fno-unwind-tables
+CFLAGS+=-fno-omit-frame-pointer -O1 -std=gnu11 -Wall -Wextra
+CFLAGS+=-Wno-format -Wno-unused -Wno-unused-parameter -Wno-address-of-packed-member -Wno-unknown-warning-option -Wno-gnu-designator -Werror
+CFLAGS+=-fno-stack-protector -mno-mmx -mno-sse -mno-sse2 -mno-sse3
+CFLAGS+=-mno-ssse3 -mno-sse4.1 -mno-sse4.2 -mfpmath=387 -fno-pie
+BOOT_CFLAGS=${CFLAGS} -m32 -nostdinc -I. -DVBE_MAX_WIDTH=${VBE_MAX_WIDTH} -DVBE_MAX_HEIGHT=${VBE_MAX_HEIGHT}
+KERN_CFLAGS=${CFLAGS} -m64 -mcmodel=kernel -nostdinc -I.
+LIB_CFLAGS=${CFLAGS} -m64 -nostdinc -I.
+USER_CFLAGS=${CFLAGS} -m64 -nostdinc -I.
+BOOT_LDFLAGS=-m elf_i386
+KERN_LDFLAGS=-m elf_x86_64
+USER_LDFLAGS=-T user/user.ld
 
-CFLAGS = -fno-pic -static -fno-builtin -fno-strict-aliasing -MD -ggdb -fno-omit-frame-pointer
-# CFLAGS += -O2 -std=c11 -Wall -Wextra -Wno-format -Wno-unused -Wno-address-of-packed-member -Werror
-CFLAGS += -O1 -std=c11 -Wall -Wextra -Wno-format -Wno-unused -Wno-address-of-packed-member -Werror
-CFLAGS += $(shell $(CC) -fno-stack-protector -E -x c /dev/null >/dev/null 2>&1 && echo -fno-stack-protector)
-# Prevent gcc from generating MMX and SSE instructions
-CFLAGS += -mno-mmx -mno-sse -mno-sse2 -mno-sse3 -mno-ssse3 -mno-sse4.1 -mno-sse4.2 -mfpmath=387
-# ASFLAGS = -m32 -gdwarf-2 -Wa,-divide
-# LDFLAGS += -m elf_x86_64
-# LDFLAGS += -m elf_i386
-LDFLAGS :=
+BOOT_BLOCK=${OBJDIR}/boot/bootblock
+KERNEL=${OBJDIR}/kern/kernel
+LIBRARY=${OBJDIR}/lib/libPRONINX_x86_64.a
+INITCODE=${OBJDIR}/kern/initcode
+MKFS=${OBJDIR}/kern/mkfs
+PRONINX_IMG=${OBJDIR}/PRONINX.img
+FS_IMG=${OBJDIR}/fs.img
+KERNEL_START_SECTOR=32
 
-# Disable PIE when possible (for Ubuntu 16.10 toolchain)
-ifneq ($(shell $(CC) -dumpspecs 2>/dev/null | grep -e '[^f]no-pie'),)
-	CFLAGS += -fno-pie -no-pie
-endif
-ifneq ($(shell $(CC) -dumpspecs 2>/dev/null | grep -e '[^f]nopie'),)
-	CFLAGS += -fno-pie -nopie
-endif
+BOOT_SRCS!=cd ${.CURDIR} && find boot -maxdepth 1 -type f -name '*.c' -print
+BOOT_ASM_SRCS=boot/entrypgdir.S boot/stage_1.S boot/stage_3.S boot/video.S
+KERN_SRCS!=cd ${.CURDIR} && find kern -type f -name '*.c' ! -name mkfs.c -print
+KERN_ASM_SRCS=kern/entry.S kern/swtch.S kern/trapasm.S kern/vectors.S
+LWIP_SRCS=third_party/lwip/src/core/def.c third_party/lwip/src/core/dns.c third_party/lwip/src/core/init.c third_party/lwip/src/core/inet_chksum.c third_party/lwip/src/core/ip.c third_party/lwip/src/core/mem.c third_party/lwip/src/core/memp.c third_party/lwip/src/core/netif.c third_party/lwip/src/core/pbuf.c third_party/lwip/src/core/raw.c third_party/lwip/src/core/stats.c third_party/lwip/src/core/sys.c third_party/lwip/src/core/tcp.c third_party/lwip/src/core/tcp_in.c third_party/lwip/src/core/tcp_out.c third_party/lwip/src/core/timeouts.c third_party/lwip/src/core/udp.c third_party/lwip/src/core/ipv4/dhcp.c third_party/lwip/src/core/ipv4/etharp.c third_party/lwip/src/core/ipv4/icmp.c third_party/lwip/src/core/ipv4/igmp.c third_party/lwip/src/core/ipv4/ip4.c third_party/lwip/src/core/ipv4/ip4_addr.c third_party/lwip/src/core/ipv4/ip4_frag.c third_party/lwip/src/netif/ethernet.c
+LIB_SRCS=lib/string.c
+USER_LIB_SRCS=user/usys.S user/entry.S user/printf.c user/gets.c user/stat.c
+USER_SRCS!=cd ${.CURDIR} && find user -maxdepth 1 -type f -name '*.c' ! -name 'umalloc.c' ! -name 'printf.c' ! -name 'gets.c' ! -name 'stat.c' -print
+BOOT_OBJS=
+KERN_OBJS=
+LWIP_OBJS=
+LIB_OBJS=
+USER_LIB_OBJS=
+USER_BINS=
+.for src in ${BOOT_SRCS} ${BOOT_ASM_SRCS}
+BOOT_OBJS+=${OBJDIR}/${src:R}.o
+.endfor
+.for src in ${KERN_SRCS} ${KERN_ASM_SRCS}
+KERN_OBJS+=${OBJDIR}/${src:R}.o
+.endfor
+.for src in ${LWIP_SRCS}
+LWIP_OBJS+=${OBJDIR}/${src:R}.o
+.endfor
+.for src in ${LIB_SRCS}
+LIB_OBJS+=${OBJDIR}/${src:R}.o
+.endfor
+.for src in ${USER_LIB_SRCS}
+USER_LIB_OBJS+=${OBJDIR}/${src:R}.o
+.endfor
+.for src in ${USER_SRCS}
+USER_BINS+=${OBJDIR}/${src:R}
+.endfor
+IMAGES=${PRONINX_IMG} ${FS_IMG}
 
-GDBPORT	:= 12345
-CPUS ?= 1
-ifneq ($(CPUS),1)
-$(error SMP is not implemented: build and run with CPUS=1)
-endif
+.PHONY: default all clean format ci smoke qemu qemu-gdb gdb system-image si FORCE
+default: ${IMAGES}
+all: default
 
-PRONINX_IMG := $(OBJDIR)/PRONINX.img
-FS_IMG := $(OBJDIR)/fs.img
-UFS2_SYSTEM_IMG ?=
-UFS2_DATA_IMG ?=
-IMAGES := $(PRONINX_IMG) $(FS_IMG)
-UOBJS :=
+${BOOT_BLOCK}: ${BOOT_OBJS} boot/boot.ld
+	@mkdir -p ${.TARGET:H}
+	${LD} ${BOOT_LDFLAGS} -N -T boot/boot.ld -o ${.TARGET}.o ${BOOT_OBJS}
+	${OBJDUMP} -S ${.TARGET}.o > ${.TARGET}.asm
+	${OBJCOPY} -S -O binary -j .stage_1 -j .rest_of_bootloader -j .page_table ${.TARGET}.o ${.TARGET}
 
-default: $(IMAGES)
+.for src in ${BOOT_SRCS} ${BOOT_ASM_SRCS}
+${OBJDIR}/${src:R}.o: ${src}
+	@mkdir -p ${.TARGET:H}
+	${CC} ${BOOT_CFLAGS} -c -o ${.TARGET} ${.ALLSRC}
+.endfor
 
-.PHONY: clean default format ci smoke system-image FORCE
+${LIBRARY}: ${LIB_OBJS}
+	@mkdir -p ${.TARGET:H}
+	${AR} r ${.TARGET} ${.ALLSRC}
+.for src in ${LIB_SRCS}
+${OBJDIR}/${src:R}.o: ${src}
+	@mkdir -p ${.TARGET:H}
+	${CC} ${LIB_CFLAGS} -c -o ${.TARGET} ${.ALLSRC}
+.endfor
 
+${INITCODE}: kern/initcode.S
+	@mkdir -p ${.TARGET:H}
+	${CC} ${CFLAGS} -m64 -fno-pic -nostdinc -I. -c -o ${.TARGET}.o ${.ALLSRC}
+	${LD} -m elf_x86_64 -N -e start -Ttext 0 -o ${.TARGET}.out ${.TARGET}.o
+	${OBJCOPY} -S -O binary ${.TARGET}.out ${.TARGET}
+	${OBJDUMP} -S ${.TARGET}.o > ${.TARGET}.asm
+
+${KERNEL}: ${KERN_OBJS} ${LWIP_OBJS} kern/kernel.ld ${INITCODE} ${LIBRARY}
+	@mkdir -p ${.TARGET:H}
+	${LD} ${KERN_LDFLAGS} -T kern/kernel.ld -o ${.TARGET} ${KERN_OBJS} ${LWIP_OBJS} -L${OBJDIR}/lib -lPRONINX_x86_64 -b binary ${INITCODE}
+	${OBJDUMP} -S ${.TARGET} > ${.TARGET}.asm
+.for src in ${KERN_SRCS} ${KERN_ASM_SRCS} ${LWIP_SRCS}
+${OBJDIR}/${src:R}.o: ${src}
+	@mkdir -p ${.TARGET:H}
+	${CC} ${KERN_CFLAGS} -fno-pic -Ikern -Ikern/net -Ikern/net/lwip/port/include -Ithird_party/lwip/src/include -c -o ${.TARGET} ${.ALLSRC}
+.endfor
+
+kern/vectors.S: kern/vectors.sh FORCE
+	tr -d '\r' < kern/vectors.sh | bash > ${.TARGET}
+${MKFS}: kern/mkfs.c kern/fs.h kern/param.h inc/dir.h inc/stat.h inc/types.h
+	@mkdir -p ${.TARGET:H}
+	${CC} -std=c11 -Wall -Wextra -Wno-format -Wno-unused -Wno-address-of-packed-member -Werror -I. -o ${.TARGET} kern/mkfs.c
+
+.for src in ${USER_LIB_SRCS}
+${OBJDIR}/${src:R}.o: ${src}
+	@mkdir -p ${.TARGET:H}
+	${CC} ${USER_CFLAGS} -c -o ${.TARGET} ${.ALLSRC}
+.endfor
+.for src in ${USER_SRCS}
+${OBJDIR}/${src:R}: ${src} ${USER_LIB_OBJS} ${LIBRARY}
+	@mkdir -p ${.TARGET:H}
+	${CC} ${USER_CFLAGS} -c -o ${.TARGET}.o ${.ALLSRC:M*.c}
+	${LD} ${USER_LDFLAGS} -o ${.TARGET} ${.TARGET}.o ${USER_LIB_OBJS} -L${OBJDIR}/lib -lPRONINX_x86_64
+	${OBJDUMP} -S ${.TARGET} > ${.TARGET}.asm
+.endfor
+
+${FS_IMG}: ${MKFS} ${USER_BINS}
+	@mkdir -p ${.TARGET:H}
+	${.CURDIR}/${MKFS} ${.TARGET} ${USER_BINS:S,^,${.CURDIR}/,}
+${PRONINX_IMG}: ${BOOT_BLOCK} ${KERNEL}
+	@mkdir -p ${.TARGET:H}
+	dd if=/dev/zero of=${.TARGET} count=10000
+	dd if=${BOOT_BLOCK} of=${.TARGET} conv=notrunc
+	dd if=${KERNEL} of=${.TARGET} seek=${KERNEL_START_SECTOR} conv=notrunc
 FORCE:
 
-include boot/module.mk
-include lib/module.mk
-include user/module.mk
-include kern/module.mk
-
-# Disc sector start no where kernel image is loaded
-KERNEL_START_SECTOR := 32
-
-# Formatting source files must be an explicit developer action. A build must
-# never rewrite its inputs: that keeps images reproducible and CI clean.
-$(PRONINX_IMG): $(OBJDIR)/$(BOOT_BLOCK) $(OBJDIR)/$(KERNEL)
-	dd if=/dev/zero of=$@ count=10000
-	dd if=$(OBJDIR)/$(BOOT_BLOCK) of=$@ conv=notrunc
-	dd if=$(OBJDIR)/$(KERNEL) of=$@ seek=$(KERNEL_START_SECTOR) conv=notrunc
-
-# Prevent deletion of intermediate files, e.g. cat.o, after first build, so
-# that disk image changes after first build are persistent until clean.  More
-# details:
-# http://www.gnu.org/software/make/manual/html_node/Chained-Rules.html
-.PRECIOUS: %.o
-
-# Enter QEMU monitor by 'Ctrl+a then c' if -serial mon:stdio is specified
-# ref. https://kashyapc.wordpress.com/2016/02/11/qemu-command-line-behavior-of-serial-stdio-vs-serial-monstdio/
-QEMUOPTS := $(QEMUOPTS)
-QEMU_SYSTEM_IMG := $(if $(strip $(UFS2_SYSTEM_IMG)),$(UFS2_SYSTEM_IMG),$(FS_IMG))
-QEMUOPTS += -drive file=$(PRONINX_IMG),index=0,media=disk,format=raw \
-			-drive file=$(QEMU_SYSTEM_IMG),if=ide,index=1,media=disk,format=raw \
-			-netdev user,id=proninx-net0 -device virtio-net-pci,netdev=proninx-net0 \
-			-serial mon:stdio -gdb tcp::$(GDBPORT) -smp $(CPUS)
-ifneq ($(strip $(UFS2_DATA_IMG)),)
-QEMUOPTS += -drive file=$(UFS2_DATA_IMG),if=ide,index=2,media=disk,format=raw
-endif
-QEMUOPTS += $(shell if $(QEMU) -nographic -help | grep -q '^-D '; then echo '-D qemu.log'; fi)
-
-.gdbinit: .gdbinit.tmpl
-	sed "s/localhost:1234/localhost:$(GDBPORT)/" < $^ > $@
-
-gdb:
-	$(GDB) -n -x .gdbinit
-
-# qemu: $(IMAGES) pre-qemu
-qemu: $(IMAGES)
-	$(QEMU) $(QEMUOPTS)
-
-qemu-gdb: $(IMAGES) .gdbinit
-	$(QEMU) $(QEMUOPTS) -S
-
-# Minimal non-interactive gate used by CI and release builders.
-ci: $(IMAGES)
-	test -s $(PRONINX_IMG)
-	test -s $(FS_IMG)
-
-# Boot the two development images and require PID 1 to reach the local shell.
-# This intentionally uses a timeout: the kernel is an interactive OS and
-# does not terminate on its own.
-smoke: $(IMAGES)
-	./tools/smoke-qemu.sh $(QEMU) $(PRONINX_IMG) $(FS_IMG)
-
-# Host-side release tooling. It uses a BSD-compatible makefs and never puts a
-# formatter into the PRONINX kernel or the target system.
-system-image: ci
-	./tools/build-ufs2-system.sh $(OBJDIR)/fnu-system.ufs
-
+ci: ${IMAGES}
+	test -s ${PRONINX_IMG}
+	test -s ${FS_IMG}
+clean:
+	rm -f .gdbinit qemu.log
+	rm -rf ${OBJDIR}
 format:
 	./format.sh
-
-clean:
-	rm -f *.o *.d *.asm *.bin .gdbinit qemu.log
-	rm -rf $(OBJDIR)
+qemu: ${IMAGES}
+	${QEMU} ${QEMU_VIDEO_OPTS} -drive file=${PRONINX_IMG},index=0,media=disk,format=raw -drive file=${FS_IMG},if=ide,index=1,media=disk,format=raw -serial mon:stdio -smp ${CPUS}
+smoke: ${IMAGES}
+	./tools/smoke-qemu.sh ${QEMU} ${PRONINX_IMG} ${FS_IMG}
+system-image: ci
+	./tools/build-ufs2-system.sh ${OBJDIR}/fnu-system.ufs
+si: system-image
+${.OBJDIR}/.gdbinit: .gdbinit.tmpl
+	sed 's/localhost:1234/localhost:12345/' < ${.ALLSRC} > .gdbinit
+gdb: .gdbinit
+	${GDB} -n -x .gdbinit
+qemu-gdb: ${IMAGES} .gdbinit
+	${QEMU} ${QEMU_VIDEO_OPTS} -drive file=${PRONINX_IMG},index=0,media=disk,format=raw -drive file=${FS_IMG},if=ide,index=1,media=disk,format=raw -serial mon:stdio -gdb tcp::12345 -S -smp ${CPUS}

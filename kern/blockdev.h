@@ -13,9 +13,11 @@ struct blockdev {
   uint64_t sector_count;
 };
 
-// Read bytes relative to the beginning of a bounded volume. The initial UFS2
-// integration is read-only; write support is intentionally absent.
+// Read or write bytes relative to the beginning of a bounded volume. These
+// are raw transports: callers are responsible for filesystem consistency.
 int blockdev_read(const struct blockdev *volume, uint64_t offset, void *dst,
                   uint length);
+int blockdev_write(const struct blockdev *volume, uint64_t offset,
+                   const void *src, uint length);
 
 #endif /* FNU_PRONINX_BLOCKDEV_H */

@@ -20,6 +20,14 @@ void *memset(void *dst, int c, size_t n) {
   return dst;
 }
 
+void *memcpy(void *dst, const void *src, size_t n) {
+  const char *s = src;
+  char *d = dst;
+  while (n-- > 0)
+    *d++ = *s++;
+  return dst;
+}
+
 void *memmove(void *dst, const void *src, size_t n) {
   const char *s;
   char *d;

@@ -44,6 +44,7 @@ void wsect(uint, void *);
 void rinode(uint inum, struct dinode *ip);
 void winode(uint inum, struct dinode *ip);
 uint ialloc(ushort type);
+uint mkdir_inode(uint parent, const char *name);
 void balloc(int used);
 void iappend(uint inum, void *xp, uint n);
 
@@ -68,7 +69,7 @@ uint xint(uint x) {
 
 int main(int argc, char *argv[]) {
   int i, cc, fd;
-  uint rootino, inum, off;
+  uint rootino, usrino, binino, etcino, inum, off;
   struct dirent de;
   char buf[BSIZE];
   struct dinode din;
@@ -128,6 +129,17 @@ int main(int argc, char *argv[]) {
   strcpy(de.name, "..");
   iappend(rootino, &de, sizeof(de));
 
+  usrino = mkdir_inode(rootino, "usr");
+  binino = mkdir_inode(usrino, "bin");
+  etcino = mkdir_inode(rootino, "etc");
+
+  // The kernel authentication database is populated on first boot.
+  inum = ialloc(T_FILE);
+  memset(&de, 0, sizeof(de));
+  de.inum = xshort(inum);
+  strcpy(de.name, "passwd");
+  iappend(etcino, &de, sizeof(de));
+
   for (i = 2; i < argc; i++) {
     char *name;
     name = strrchr(argv[i], '/');
@@ -148,7 +160,7 @@ int main(int argc, char *argv[]) {
     memset(&de, 0, sizeof(de));
     de.inum = xshort(inum);
     strncpy(de.name, name, DIRSIZ);
-    iappend(rootino, &de, sizeof(de));
+    iappend(binino, &de, sizeof(de));
 
     while ((cc = read(fd, buf, sizeof(buf))) > 0) {
       iappend(inum, buf, cc);
@@ -222,7 +234,33 @@ uint ialloc(ushort type) {
   din.type = xshort(type);
   din.nlink = xshort(1);
   din.size = xint(0);
+  din.uid = 0;
+  din.gid = 0;
+  din.mode = xshort(type == T_DIR ? 0755 : 0555);
   winode(inum, &din);
+  return inum;
+}
+
+uint mkdir_inode(uint parent, const char *name) {
+  uint inum;
+  struct dirent de;
+
+  inum = ialloc(T_DIR);
+
+  memset(&de, 0, sizeof(de));
+  de.inum = xshort(inum);
+  strcpy(de.name, ".");
+  iappend(inum, &de, sizeof(de));
+
+  memset(&de, 0, sizeof(de));
+  de.inum = xshort(parent);
+  strcpy(de.name, "..");
+  iappend(inum, &de, sizeof(de));
+
+  memset(&de, 0, sizeof(de));
+  de.inum = xshort(inum);
+  strncpy(de.name, name, DIRSIZ);
+  iappend(parent, &de, sizeof(de));
   return inum;
 }
 

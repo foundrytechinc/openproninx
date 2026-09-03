@@ -32,7 +32,7 @@ int main(int argc, char *argv[]) {
   int fd, i;
 
   if (argc <= 1) {
-    wc(0, "");
+    dprintf(2, "Usage: wc <file>...\n");
     exit();
   }
 

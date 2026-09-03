@@ -16,6 +16,8 @@ int64_t sys_info(void) {
 }
 
 int64_t sys_reboot(void) {
+  if (myproc()->uid != 0)
+    return -1;
   cprintf("Rebooting...\n");
   // Pulse the CPU reset line via the keyboard controller
   uint8_t good = 0x02;
@@ -95,6 +97,74 @@ int64_t sys_kill(void) {
 
 int64_t sys_getpid(void) { return (int64_t)myproc()->pid; }
 
+int64_t sys_setforeground(void) {
+  pid_t pid;
+
+  if (argint(0, &pid) < 0 || pid < 0)
+    return -1;
+  console_set_foreground(pid);
+  return 0;
+}
+
+int64_t sys_getuid(void) { return myproc()->uid; }
+
+int64_t sys_login(void) {
+  char *name, *password;
+  uint uid, gid;
+  if (argstr(0, &name) < 0 || argstr(1, &password) < 0)
+    return -1;
+  if (auth_login(name, password, &uid, &gid) < 0)
+    return -1;
+  myproc()->uid = uid;
+  myproc()->gid = gid;
+  myproc()->doas_grant = 0;
+  return 0;
+}
+
+int64_t sys_doas_auth(void) {
+  char *password;
+  if (argstr(0, &password) < 0 || auth_doas(myproc()->uid, password) < 0)
+    return -1;
+  myproc()->doas_grant = 1;
+  return 0;
+}
+
+int64_t sys_setuid(void) {
+  int uid;
+  if (argint(0, &uid) < 0 || uid != 0)
+    return -1;
+  if (myproc()->uid != 0 && !myproc()->doas_grant)
+    return -1;
+  myproc()->uid = 0;
+  myproc()->gid = 0;
+  myproc()->doas_grant = 0;
+  return 0;
+}
+
+int64_t sys_useradd(void) {
+  char *name, *password;
+  int wheel;
+  if (myproc()->uid != 0 || argstr(0, &name) < 0 ||
+      argstr(1, &password) < 0 || argint(2, &wheel) < 0)
+    return -1;
+  return auth_add_user(name, password, wheel != 0);
+}
+
+int64_t sys_passwd(void) {
+  char *name, *password;
+  if (argstr(0, &name) < 0 || argstr(1, &password) < 0)
+    return -1;
+  return auth_set_password(myproc()->uid, name, password);
+}
+
+int64_t sys_users(void) {
+  struct user_info *out;
+  int index;
+  if (argptr(0, (char **)&out, sizeof(*out)) < 0 || argint(1, &index) < 0)
+    return -1;
+  return auth_user_info(index, out);
+}
+
 int64_t sys_sbrk(void) {
   uintptr_t addr;
   int n;
@@ -133,3 +203,26 @@ int64_t sys_sleep(void) {
   release(&tickslock);
   return 0;
 }
+
+int64_t sys_ping(void) {
+  struct network_ping_request *request;
+  if (argptr(0, (char **)&request, sizeof(*request)) < 0)
+    return -1;
+  return proninx_lwip_ping(request);
+}
+int64_t sys_udp_open(void) { return proninx_udp_open(); }
+int64_t sys_udp_bind(void) { int h, p; return argint(0,&h)||argint(1,&p) ? -1 : proninx_udp_bind(h,p); }
+int64_t sys_udp_close(void) { int h; return argint(0,&h) ? -1 : proninx_udp_close(h); }
+int64_t sys_udp_sendto(void) { int h,n; char *b; struct network_endpoint *e; if (argint(0,&h)||argint(2,&n)||n<0||argptr(1,&b,n)||argptr(3,(char**)&e,sizeof(*e))) return -1; return proninx_udp_sendto(h,b,n,e); }
+int64_t sys_udp_recvfrom(void) { int h,n,t; char *b; struct network_endpoint *e; if (argint(0,&h)||argint(2,&n)||n<=0||argptr(1,&b,n)||argptr(3,(char**)&e,sizeof(*e))||argint(4,&t)||t<0) return -1; return proninx_udp_recvfrom(h,b,n,e,t); }
+int64_t sys_netinfo(void) { struct network_status *status; return argptr(0, (char **)&status, sizeof(*status)) < 0 ? -1 : proninx_lwip_status(status); }
+int64_t sys_netconfig(void) { struct network_ipv4_config *config; return argptr(0, (char **)&config, sizeof(*config)) < 0 ? -1 : proninx_lwip_configure(config); }
+int64_t sys_tcp_open(void) { return proninx_tcp_open(); }
+int64_t sys_tcp_bind(void) { int h, p; return argint(0, &h) || argint(1, &p) || p < 1 || p > 65535 ? -1 : proninx_tcp_bind(h, p); }
+int64_t sys_tcp_listen(void) { int h; return argint(0, &h) ? -1 : proninx_tcp_listen(h); }
+int64_t sys_tcp_accept(void) { int h, timeout; return argint(0, &h) || argint(1, &timeout) || timeout < 0 ? -1 : proninx_tcp_accept(h, timeout); }
+int64_t sys_tcp_connect(void) { int h, timeout; struct network_endpoint *e; return argint(0, &h) || argptr(1, (char **)&e, sizeof(*e)) || argint(2, &timeout) || timeout < 0 ? -1 : proninx_tcp_connect(h, e, timeout); }
+int64_t sys_tcp_send(void) { int h, n; char *b; return argint(0, &h) || argint(2, &n) || n <= 0 || argptr(1, &b, n) ? -1 : proninx_tcp_send(h, b, n); }
+int64_t sys_tcp_recv(void) { int h, n, timeout; char *b; return argint(0, &h) || argint(2, &n) || n <= 0 || argptr(1, &b, n) || argint(3, &timeout) || timeout < 0 ? -1 : proninx_tcp_recv(h, b, n, timeout); }
+int64_t sys_tcp_close(void) { int h; return argint(0, &h) ? -1 : proninx_tcp_close(h); }
+int64_t sys_dns_resolve(void) { struct network_dns_request *request; return argptr(0, (char **)&request, sizeof(*request)) < 0 ? -1 : proninx_dns_resolve(request); }

@@ -32,7 +32,7 @@ main(void)
     exit();
   }
 
-  printf("\033[2J\033[H"); // Clear screen
+  printf("\033[2J\033[H");
   printf("%s TOP\n", FNU_PRODUCT_NAME);
   printf("Uptime: %d ticks | Procs: %d | RAM: %d/%d KB free\n\n", 
          sys_info.uptime, sys_info.nprocs, sys_info.free_ram/1024, sys_info.total_ram/1024);
