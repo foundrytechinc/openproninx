@@ -3,6 +3,23 @@
 
 #include "inc/types.h"
 
+/*
+ * OpenProninx Application Binary Interface (ABI) Header
+ *
+ * Tier 1: STABLE ABI STRUCTURES
+ * Frozen layouts with fixed field alignments and sizes. Guaranteed binary
+ * compatibility for userland programs.
+ *
+ * Tier 2: EXPERIMENTAL / SUBSYSTEM-SPECIFIC STRUCTURES
+ * Internal structures for kernel-level auth.
+ * Subject to change or replacement by userland auth APIs.
+ */
+
+/* ========================================================================== */
+/* STABLE ABI DATA STRUCTURES                                                 */
+/* ========================================================================== */
+
+/* System Information (SYS_info) */
 struct info {
   uint64 uptime;           // System uptime in ticks
   uint64 total_ram;        // Total physical memory
@@ -10,22 +27,73 @@ struct info {
   uint32 nprocs;           // Number of active processes
 };
 
-#define USER_NAME_MAX 16
-struct user_info {
-  char name[USER_NAME_MAX];
-  uint32 uid;
-  uint32 gid;
-  uint32 wheel;
+/* Process Inspection (SYS_procinfo) */
+enum procstate { UNUSED, EMBRYO, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
+
+struct procinfo {
+  pointer_t pid;           // Process ID
+  proc_state_t state;      // Process state
+  char name[16];           // Process name
+  pointer_t memory_size;   // Process memory size in bytes
 };
 
+/* Directory Entry 64-bit (SYS_getdents) */
+struct linux_dirent64 {
+  uint64 d_ino;            // Inode number (64 bits)
+  int64  d_off;            // Offset to next entry
+  unsigned short d_reclen; // Size of this entry
+  unsigned char  d_type;   // File type (DT_DIR, DT_REG, etc.)
+  char           d_name[]; // Filename (null-terminated)
+};
+
+#define DT_UNKNOWN 0
+#define DT_FIFO    1
+#define DT_CHR     2
+#define DT_DIR     4
+#define DT_BLK     6
+#define DT_REG     8
+#define DT_LNK     10
+#define DT_SOCK    12
+#define DT_WHT     14
+
+/* Terminal Attributes & Control (SYS_ioctl TCGETS / TCSETS) */
+struct termios {
+    uint32 c_iflag;      // Input mode flags
+    uint32 c_oflag;      // Output mode flags
+    uint32 c_cflag;      // Control mode flags
+    uint32 c_lflag;      // Local mode flags (ICANON, ECHO, etc.)
+    uint8  c_line;       // Line discipline
+    uint8  c_cc[19];     // Control characters
+};
+
+#define ICANON   0000002
+#define ECHO     0000010
+#define ECHOPASS 0000020 // Echo password input as masking characters.
+
+#define TCGETS   0x5401
+#define TCSETS   0x5402
+
+/* Display Resolution Control (SYS_ioctl FBIOGET_VSCREENINFO / FBIOPUT_VSCREENINFO) */
+#define FBIOGET_VSCREENINFO 0x4600
+#define FBIOPUT_VSCREENINFO 0x4601
+
+struct fb_var_screeninfo {
+    uint32 xres;           // visible resolution width
+    uint32 yres;           // visible resolution height
+    uint32 bits_per_pixel; // bits per pixel
+};
+
+/* Network Ping Request (SYS_ping) */
 struct network_ping_request {
   uint8 address[4];
   uint32 timeout_ms;
   uint32 round_trip_ms;
 };
 
+/* Network Endpoint (IP + Port) */
 struct network_endpoint { uint8 address[4]; uint16 port; };
 
+/* Network IPv4 Configuration (SYS_netconfig) */
 /* Set dhcp to zero for a static address; non-zero restarts DHCP. */
 struct network_ipv4_config {
   uint8 address[4];
@@ -35,6 +103,7 @@ struct network_ipv4_config {
   uint32 dhcp;
 };
 
+/* DNS Resolution Request (SYS_dns_resolve) */
 #define NETWORK_DNS_NAME_MAX 64
 struct network_dns_request {
   char name[NETWORK_DNS_NAME_MAX];
@@ -42,6 +111,7 @@ struct network_dns_request {
   uint32 timeout_ms;
 };
 
+/* Network Interface Status (SYS_netinfo) */
 struct network_status {
   char interface_name[16];
   uint8 hardware_address[6];
@@ -54,47 +124,41 @@ struct network_status {
   uint64 transmitted_frames;
 };
 
-struct procinfo {
-  pointer_t pid;           // Process ID
-  proc_state_t state;      // Process state
-  char name[16];           // Process name
-  pointer_t memory_size;   // Process memory size in bytes
+/* CMOS / RTC wall-clock time snapshot. All fields are binary (not BCD). */
+struct rtctime {
+  uint8  sec;
+  uint8  min;
+  uint8  hour;
+  uint8  wday;      /* 0 = Sunday .. 6 = Saturday */
+  uint8  mday;      /* 1..31 */
+  uint8  mon;       /* 1..12 */
+  uint16 year;      /* full 4-digit year, e.g. 2026 */
 };
 
-struct linux_dirent64 {
-  uint64 d_ino;          // Inode number (64 bits)
-  int64  d_off;          // Offset to next entry
-  unsigned short d_reclen; // Size of this entry
-  unsigned char  d_type;   // File type (DT_DIR, DT_REG, etc.)
-  char           d_name[]; // Filename (null-terminated)
+/* Per-filesystem usage entry returned by SYS_df. */
+#define DF_ENTRIES_MAX 4
+struct df_stat {
+  char     label[24];       /* FNU Root, FNU Data, RAM, ... */
+  char     mount_point[32]; /* /, /data, --, etc. */
+  uint64   total_bytes;
+  uint64   used_bytes;
+  uint64   free_bytes;
+  uint8    is_read_only;    /* 1 if read-only volume, 0 if writable */
+  uint8    is_present;      /* 1 if the device was actually probed */
+  uint8    _pad[6];
 };
 
-struct termios {
-    uint32 c_iflag;      // Input mode flags
-    uint32 c_oflag;      // Output mode flags
-    uint32 c_cflag;      // Control mode flags
-    uint32 c_lflag;      // Local mode flags (ICANON, ECHO, etc.)
-    uint8  c_line;       // Line discipline
-    uint8  c_cc[19];     // Control characters
+/* ========================================================================== */
+/* EXPERIMENTAL / SUBSYSTEM-SPECIFIC STRUCTURES                               */
+/* ========================================================================== */
+
+/* In-Kernel Account Information (SYS_users) */
+#define USER_NAME_MAX 16
+struct user_info {
+  char name[USER_NAME_MAX];
+  uint32 uid;
+  uint32 gid;
+  uint32 wheel;
 };
 
-#define ICANON 0000002
-#define ECHO   0000010
-#define ECHOPASS 0000020 // Echo password input as masking characters.
-
-enum procstate { UNUSED, EMBRYO, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
-
-#define TCGETS 0x5401
-#define TCSETS 0x5402
-
-#define DT_UNKNOWN 0
-#define DT_FIFO    1
-#define DT_CHR     2
-#define DT_DIR     4
-#define DT_BLK     6
-#define DT_REG     8
-#define DT_LNK     10
-#define DT_SOCK    12
-#define DT_WHT     14
-
-#endif
+#endif /* ifndef PRONINX_X86_64_ABI_H */

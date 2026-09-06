@@ -24,28 +24,33 @@ static int is_dot_entry(const char *name) {
 #define LS_CELL_WIDTH 20
 
 static void print_entry(const char *name, const struct stat *st) {
-  int i, used = 0;
+  char buf[LS_CELL_WIDTH + 32];
+  int i, len = 0;
   int length = strlen(name);
   int directory = st->type == T_DIR;
   int shortened = length + directory > LS_CELL_WIDTH;
   int visible = shortened ? LS_CELL_WIDTH - 3 - directory : length;
 
-  dprintf(1, directory ? "\033[1;34m" : "\033[1;32m");
+  const char *color = directory ? "\033[1;34m" : "\033[1;32m";
+  while (*color) buf[len++] = *color++;
   for (i = 0; i < visible; i++) {
-    dprintf(1, "%c", name[i]);
-    used++;
+    buf[len++] = name[i];
   }
   if (shortened) {
-    dprintf(1, "...");
-    used += 3;
+    buf[len++] = '.';
+    buf[len++] = '.';
+    buf[len++] = '.';
   }
   if (directory) {
-    dprintf(1, "/");
-    used++;
+    buf[len++] = '/';
   }
-  dprintf(1, "\033[0m");
-  while (used++ < LS_CELL_WIDTH)
-    dprintf(1, " ");
+  const char *reset = "\033[0m";
+  while (*reset) buf[len++] = *reset++;
+  int printed_len = visible + (shortened ? 3 : 0) + (directory ? 1 : 0);
+  while (printed_len++ < LS_CELL_WIDTH)
+    buf[len++] = ' ';
+  buf[len] = '\0';
+  dprintf(1, "%s", buf);
 }
 
 void ls(char *path) {

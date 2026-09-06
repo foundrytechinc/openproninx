@@ -44,8 +44,11 @@ All offsets are bounds-checked and corrupt directory records are rejected.
 
 The kernel now discovers an optional dedicated IDE device 2, validates it as a
 UFS2 volume and verifies the root inode and `.` directory record. It never
-attaches that volume to the legacy VFS and never writes it. The current image
-that boots `init` and PSH remains IDE device 1 and is untouched.
+attaches that volume to the legacy VFS and never writes it. When no external
+IDE device 1 is attached, OpenProninx boots as a fully self-contained LiveCD
+using its built-in in-memory root filesystem ramdisk (`DEV_RAMDISK`). When an
+external volume is attached to IDE device 1, it takes priority and can serve as
+either an external native root filesystem or a UFS2 system image.
 
 When a valid FNU Data image is supplied, it is exposed at `/data`.
 When a valid UFS2 system image replaces IDE device 1, it becomes the root

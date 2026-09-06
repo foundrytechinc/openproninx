@@ -1,6 +1,5 @@
 // PRONINX-owned packet I/O boundary for the vendored networking stack.
-// No FreeBSD source is included here: the future compatibility layer maps its
-// mbufs and ifnet callbacks onto these deliberately small interfaces.
+// No third-party source is compiled here; this file is pure PRONINX glue.
 #include "adapter.h"
 #include "defs.h"
 #include "spinlock.h"

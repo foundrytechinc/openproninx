@@ -55,6 +55,8 @@ void cprintf(char *, ...);
 void panic(char *) __attribute__((noreturn));
 int consoleioctl(struct inode *, uint64_t, uint64_t);
 void console_set_foreground(pid_t pid);
+void console_flush(void);
+void console_flush_if_dirty(void);
 
 // framebuffer.c
 uint32_t framebuffer_phys(void);
@@ -74,18 +76,33 @@ uint framebuffer_columns(void);
 uint framebuffer_rows(void);
 void framebuffer_init(void);
 void framebuffer_draw_cell(int, ushort);
+void framebuffer_draw_row(uint, const ushort *);
 void framebuffer_redraw_cells(const ushort *, int);
+void framebuffer_flush_cells(const ushort *, int);
+void framebuffer_scroll_up(void);
+void framebuffer_scroll_lines(int, ushort);
+void framebuffer_clear(void);
+int framebuffer_has_dispi(void);
+void framebuffer_init_gpu(void *, uint, uint, uint);
+void console_switch_to_gpu(void);
+int display_set_resolution(uint w, uint h);
+void display_get_resolution(uint *w, uint *h, uint *bpp);
+
 
 // fnustate.c
 void fnustateinit(void);
 int fnustateread(struct inode *, char *, int);
 int fnustatewrite(struct inode *, char *, int);
 
-// virtio_net.c
-void virtio_net_init(void);
-void virtio_net_intr(void);
-void virtio_net_poll(void);
-int virtio_net_handles_irq(int irq);
+// driver.c & device drivers
+void driver_framework_init(void);
+int driver_attach_pci_devices(void);
+int driver_dispatch_irq(int irq);
+void driver_poll_all(void);
+void e1000_driver_init(void);
+void virtio_net_driver_init(void);
+int virtio_gpu_driver_init(void);
+
 
 // auth.c
 void auth_init(void);
@@ -137,6 +154,7 @@ int dirlink(struct inode *, char *, uint);
 struct inode *dirlookup(struct inode *, char *, uint *);
 struct inode *ialloc(uint, short);
 struct inode *idup(struct inode *);
+extern uint rootdev;
 void iinit(int dev);
 struct inode *iget(uint dev, uint inum);
 void iupdate_inum(struct inode *ip, uint inum);
@@ -165,11 +183,37 @@ int fat32_unlink(struct inode *dp, uint off);
 int fat32_isdirempty(struct inode *dp);
 struct inode* fat32_ialloc(uint dev, short type);
 
+// ramdisk.c
+void ramdisk_init(void);
+uint64_t ramdisk_size(void);
+int ramdisk_available(void);
+void ramdiskrw(struct buf *b);
+
 // ide.c
 void ideinit(void);
 void ideintr(int channel);
 void iderw(struct buf *b);
 uint64_t ide_size(uint device);
+
+// ahci.c
+void ahci_driver_init(void);
+void ahci_init(void);
+uint64_t ahci_size(uint port);
+int ahci_read(uint port, uint64_t lba, uint count, void *dst);
+int ahci_write(uint port, uint64_t lba, uint count, const void *src);
+void ahcirw(struct buf *b);
+
+// nvme.c
+void nvme_driver_init(void);
+void nvme_init(void);
+uint64_t nvme_size(uint ns_id);
+int nvme_read(uint ns_id, uint64_t lba, uint count, void *dst);
+int nvme_write(uint ns_id, uint64_t lba, uint count, const void *src);
+void nvmerw(struct buf *b);
+
+// blockdev.c
+uint64_t blockdev_device_size(uint device);
+void blockdev_rw(struct buf *b);
 
 // storage.c
 void storageinit(void);
@@ -178,6 +222,10 @@ int storage_mount_root(void);
 
 // fs.c
 int fs_root_readonly(void);
+
+// ioapic.c
+extern volatile struct ioapic *ioapic;
+extern uint8_t ioapicid;
 
 // ioapic.c
 extern volatile struct ioapic *ioapic;
@@ -193,6 +241,7 @@ extern volatile uint32_t *lapic;
 void lapiceoi(void);
 int lapicid(void);
 void lapicinit(void);
+void lapicstartap(uchar, uint32_t);
 void microdelay(int us);
 
 // log.c
@@ -209,9 +258,20 @@ void kinit1(void *vstart);
 void kinit2();
 uint64_t get_total_ram(void);
 uint64_t get_free_ram(void);
+void *gpu_alloc_backing(uint32_t, uint64_t *);
+
+// acpi.c
+int acpi_init(void);
+void acpi_print_summary(void);
+void *acpi_find_table(const char *signature);
+int acpi_mp_init(void);
+void acpi_poweroff(void) __attribute__((noreturn));
+void acpi_reboot(void) __attribute__((noreturn));
 
 // mp.c
 void mpinit(void);
+void startothers(void);
+void mpmain(void) __attribute__((noreturn));
 
 // picirq.c
 void picinit(void);
@@ -299,6 +359,7 @@ void seginit(void);
 pte_t *setupkvm(void);
 void switchkvm(void);
 void switchuvm(struct proc *p);
+void *ioremap(uintptr_t, uint);
 
 // number of elements in fixed-size array
 #define NELEM(x) (sizeof(x) / sizeof((x)[0]))

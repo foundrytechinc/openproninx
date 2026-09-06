@@ -72,10 +72,44 @@ void kinit1(void *vstart) {
   initlock(&kmem.lock, "kmem");
   kmem.use_lock = 0;
   detect_memory();
+  uintptr_t end_phys = PGROUNDUP((uintptr_t)V2P(vstart));
+  if (phys_temporary_top < end_phys + 4 * 1024 * 1024) {
+    phys_temporary_top = end_phys + 4 * 1024 * 1024;
+  }
   freerange(vstart, (void *)P2V(phys_temporary_top));
 }
 
+static char *gpu_backing_mem = 0;
+static uint64_t gpu_backing_phys = 0;
+static uintptr_t gpu_reserve_size = 0;
+
+void *gpu_alloc_backing(uint32_t size, uint64_t *phys_out) {
+  if (gpu_backing_mem && (size == 0 || size <= gpu_reserve_size)) {
+    if (phys_out)
+      *phys_out = gpu_backing_phys;
+    return gpu_backing_mem;
+  }
+  return 0;
+}
+
 void kinit2() {
+  uintptr_t gpu_reserve = 16 * 1024 * 1024;
+  if (phys_top > (uintptr_t)phys_temporary_top + gpu_reserve + 16 * 1024 * 1024) {
+    phys_top -= gpu_reserve;
+    gpu_reserve_size = gpu_reserve;
+    gpu_backing_phys = phys_top;
+    gpu_backing_mem = (char *)P2V(gpu_backing_phys);
+    memset(gpu_backing_mem, 0, gpu_reserve);
+  } else {
+    gpu_reserve = 4 * 1024 * 1024;
+    if (phys_top > (uintptr_t)phys_temporary_top + gpu_reserve + 4 * 1024 * 1024) {
+      phys_top -= gpu_reserve;
+      gpu_reserve_size = gpu_reserve;
+      gpu_backing_phys = phys_top;
+      gpu_backing_mem = (char *)P2V(gpu_backing_phys);
+      memset(gpu_backing_mem, 0, gpu_reserve);
+    }
+  }
   freerange((void *)P2V(phys_temporary_top), (void *)P2V(phys_top));
   kmem.use_lock = 1;
 }

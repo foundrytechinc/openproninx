@@ -2,6 +2,66 @@
 #include "inc/product.h"
 
 char current_dir[64] = "/";
+char current_user[USER_NAME_MAX] = "user";
+
+/* ---- FNU / PSH command history. A simple ring buffer: HIST_LEN entries,
+ * each at most HIST_CMD bytes per line. */
+#define HIST_LEN 32
+#define HIST_CMD 256
+
+static char  history[HIST_LEN][HIST_CMD];
+static int   hist_count;   /* 0 .. HIST_LEN */
+static int   hist_next;   /* slot that will be overwritten on append */
+static int   hist_cursor;  /* -1 = typing new line; 0..hist_count-1 = browsing */
+
+static void history_init(void) {
+  int i;
+  for (i = 0; i < HIST_LEN; i++)
+    history[i][0] = 0;
+  hist_count  = 0;
+  hist_next   = 0;
+  hist_cursor = -1;
+}
+
+static void history_append(const char *line) {
+  int len;
+  /* Trim trailing whitespace and skip empty lines. */
+  while (*line == ' ' || *line == '\t') line++;
+  if (*line == 0 || *line == '\n' || *line == '\r')
+    return;
+  /* Drop duplicates of the most recent command. */
+  if (hist_count > 0) {
+    int last = (hist_next + HIST_LEN - 1) % HIST_LEN;
+    if (strcmp(history[last], line) == 0)
+      return;
+  }
+  len = strlen(line);
+  if (len >= HIST_CMD) len = HIST_CMD - 1;
+  memmove(history[hist_next], line, len);
+  history[hist_next][len] = 0;
+  hist_next = (hist_next + 1) % HIST_LEN;
+  if (hist_count < HIST_LEN) hist_count++;
+  hist_cursor = -1;
+}
+
+static const char *history_navigate(int direction) {
+  if (hist_count == 0) return 0;
+  if (hist_cursor < 0) {
+    hist_cursor = (hist_next + HIST_LEN - 1) % HIST_LEN;
+  } else {
+    if (direction > 0) { /* UP -- older */
+      int newest = (hist_next + HIST_LEN - 1) % HIST_LEN;
+      int oldest = (hist_next + HIST_LEN - hist_count) % HIST_LEN;
+      if (hist_cursor == oldest) return 0; /* cannot go older */
+      hist_cursor = (hist_cursor + HIST_LEN - 1) % HIST_LEN;
+    } else {          /* DOWN -- newer */
+      int newest = (hist_next + HIST_LEN - 1) % HIST_LEN;
+      if (hist_cursor == newest) { hist_cursor = -1; return 0; }
+      hist_cursor = (hist_cursor + 1) % HIST_LEN;
+    }
+  }
+  return history[hist_cursor];
+}
 
 #define EXEC  1
 #define REDIR 2
@@ -53,6 +113,19 @@ struct cmd *parsecmd(char*);
 void runcmd(struct cmd*) __attribute__((noreturn));
 
 static struct procinfo status_processes[64];
+
+static void resolve_current_user(void) {
+  struct user_info info;
+  int index;
+  int uid = getuid();
+  for (index = 0; users(&info, index) == 0; index++) {
+    if (info.uid == (uint)uid) {
+      safestrcpy(current_user, info.name, sizeof(current_user));
+      return;
+    }
+  }
+  safestrcpy(current_user, "unknown", sizeof(current_user));
+}
 
 static int command_is(char *command, char *name) {
   int length = strlen(name);
@@ -183,14 +256,158 @@ runcmd(struct cmd *cmd)
   exit();
 }
 
+/* --------------------------------------------------------------------------
+ * Custom line editor for PSH.  The console driver is switched to raw
+ * (non-ICANON) mode so arrow keys arrive as single high-ASCII bytes from
+ * kbd.c (KEY_UP=0xE2, KEY_DN=0xE3) or the standard VT100 ESC [ A / B escape
+ * sequences on a serial line.  Explicit echoing keeps prompt redraws cheap.
+ * -------------------------------------------------------------------------- */
+static int psh_getch(void) {
+  char c;
+  int n = read(0, &c, 1);
+  return n <= 0 ? -1 : (int)(unsigned char)c;
+}
+
+static void psh_bs_n(int n) {
+  while (n-- > 0) {
+    write(2, "\b \b", 3);
+  }
+}
+
+static void psh_redraw_line(const char *buf, int len) {
+  int i;
+  psh_bs_n(len);
+  for (i = 0; i < len; i++)
+    write(2, &buf[i], 1);
+  /* Clear anything after the new cursor position. */
+  for (i = 0; i < 10; i++)
+    write(2, " ", 1);
+  for (i = 0; i < 10; i++)
+    write(2, "\b", 1);
+}
+
 int
 getcmd(char *buf, int nbuf)
 {
-  dprintf(2, "\033[32mPSH \033[34m[%s] \033[32m$ \033[0m", current_dir); 
-  
+  static struct termios cooked, raw;
+  static int initialised;
+  int len = 0, c, esc_state;
+
+  if (!initialised) {
+    history_init();
+    initialised = 1;
+  }
+  if (ioctl(0, TCGETS, (uint64_t)&cooked) == 0) {
+    raw = cooked;
+    raw.c_lflag &= ~(ICANON | ECHO);
+    ioctl(0, TCSETS, (uint64_t)&raw);
+  }
+
+  dprintf(2, "\033[32m%s@PSH \033[34m[%s] \033[32m$ \033[0m", current_user, current_dir);
+
   memset(buf, 0, nbuf);
-  gets(buf, nbuf);
-  if(buf[0] == 0) return -1;
+  hist_cursor = -1;
+  esc_state = 0;
+
+  for (;;) {
+    c = psh_getch();
+    if (c < 0) break;
+    if (esc_state == 1) {
+      if (c == '[') { esc_state = 2; continue; }
+      esc_state = 0;
+      continue;
+    }
+    if (esc_state == 2) {
+      if (c == 'A') c = 0xE2;  /* VT100 Up    -> KEY_UP   */
+      else if (c == 'B') c = 0xE3;  /* VT100 Down  -> KEY_DN   */
+      else if (c == 'C') c = 0xE5;  /* VT100 Right -> KEY_RT   */
+      else if (c == 'D') c = 0xE4;  /* VT100 Left  -> KEY_LF   */
+      esc_state = 0;
+    }
+
+    if (c == 0x1b) { esc_state = 1; continue; }
+
+    switch (c) {
+    case '\r':
+    case '\n':
+      write(2, "\r\n", 2);
+      buf[len] = '\n';
+      buf[len + 1] = 0;
+      goto done;
+    case 0x03:    /* ^C */
+      write(2, "^C\r\n", 4);
+      len = 0; buf[0] = 0;
+      goto submit_empty;
+    case 0x15:    /* ^U -- kill line */
+      psh_bs_n(len);
+      len = 0; buf[0] = 0;
+      continue;
+    case '\b':
+    case 0x7f:    /* Backspace / DEL */
+      if (len > 0) {
+        buf[--len] = 0;
+        write(2, "\b \b", 3);
+      }
+      continue;
+    case 0xE2:    /* KEY_UP */
+    {
+      const char *h = history_navigate(+1);
+      if (h == 0) continue;
+      int hl = strlen(h);
+      safestrcpy(buf, h, nbuf);
+      buf[hl] = 0;
+      psh_redraw_line(buf, len);
+      len = hl;
+      continue;
+    }
+    case 0xE3:    /* KEY_DN */
+    {
+      const char *h = history_navigate(-1);
+      if (hist_cursor < 0) {
+        /* Moved past newest -> empty input. */
+        psh_redraw_line("", len);
+        len = 0; buf[0] = 0;
+        continue;
+      }
+      if (h == 0) continue;
+      int hl = strlen(h);
+      safestrcpy(buf, h, nbuf);
+      buf[hl] = 0;
+      psh_redraw_line(buf, len);
+      len = hl;
+      continue;
+    }
+    default:
+      if (c < 0x20 || c >= 0x80)
+        continue; /* ignore other non-printable / special kbd codes */
+      if (len + 2 >= nbuf) {
+        dprintf(2, "\nPSH: input line too long (> %d bytes)\n", nbuf - 2);
+        len = 0; buf[0] = 0;
+        goto submit_empty;
+      }
+      buf[len++] = (char)c;
+      buf[len] = 0;
+      write(2, &buf[len - 1], 1);
+      continue;
+    }
+  }
+
+done:
+  /* Drop the trailing newline for history storage. */
+  {
+    char tmp[HIST_CMD];
+    int i, hl;
+    hl = len > HIST_CMD - 1 ? HIST_CMD - 1 : len;
+    for (i = 0; i < hl; i++) {
+      if (buf[i] == '\n' || buf[i] == '\r') break;
+      tmp[i] = buf[i];
+    }
+    tmp[i] = 0;
+    history_append(tmp);
+  }
+submit_empty:
+  ioctl(0, TCSETS, (uint64_t)&cooked);
+  if (buf[0] == 0) return -1;
   return 0;
 }
 
@@ -201,6 +418,7 @@ main(void)
   int fd, child;
 
   setforeground(0);
+  resolve_current_user();
 
   while((fd = open("/dev/console", O_RDWR)) >= 0){
     if(fd >= 3){
@@ -222,7 +440,8 @@ main(void)
   printf("   \\_______\\__/ \n");
   printf("\033[0m\n");
   printf("Welcome to %s %s!\n", FNU_PRODUCT_NAME, FNU_PRODUCT_VERSION);
-  printf("Type 'help' for built-in commands.\n\n");
+  printf("Shell: FNU/PSH (Proninx Shell) \n");
+  printf("Type 'help' for built-in commands, or 'fnufetch' for system summary.\n\n");
 
   while(getcmd(buf, sizeof(buf)) >= 0){
     char *cmd = buf;
@@ -231,18 +450,44 @@ main(void)
     if (*cmd == '\n' || *cmd == 0)
       continue;
 
+    if(cmd[0] == 'h' && cmd[1] == 'i' && cmd[2] == 's' && cmd[3] == 't' && cmd[4] == 'o' && cmd[5] == 'r' && cmd[6] == 'y' && (cmd[7] == ' ' || cmd[7] == '\n' || cmd[7] == '\r' || cmd[7] == 0)){
+      if (hist_count == 0) {
+        printf("PSH: command history is empty (type some commands first; "
+               "use Up/Down arrows to browse)\n");
+      } else {
+        int i, slot;
+        int oldest = (hist_next + HIST_LEN - hist_count) % HIST_LEN;
+        for (i = 0; i < hist_count; i++) {
+          slot = (oldest + i) % HIST_LEN;
+          if (history[slot][0] == 0) continue;
+          printf(" %3d  %s\n", i + 1, history[slot]);
+        }
+      }
+      continue;
+    }
+
     if(cmd[0] == 'h' && cmd[1] == 'e' && cmd[2] == 'l' && cmd[3] == 'p' && (cmd[4] == ' ' || cmd[4] == '\n' || cmd[4] == '\r' || cmd[4] == 0)){
-      printf("PSH Built-in commands:\n");
+      printf("PSH (Proninx Shell) -- part of FNU userland\n");
+      printf("Built-in commands:\n");
       printf("  cd <dir>   - Change directory\n");
       printf("  clear      - Clear screen\n");
-      printf("  info       - Show system info\n");
+      printf("  fnufetch   - Pretty system information (FNU fetch)\n");
+      printf("  fnudf      - Disk usage summary (FNU df -h style)\n");
+      printf("  fnudate    - Current RTC wall clock (FNU date)\n");
+      printf("  info       - Alias for 'fnufetch'\n");
+      printf("  history    - Show numbered PSH command history\n");
       printf("  status     - Show node and process state\n");
       printf("  services   - Show managed service state\n");
       printf("  health     - Show latest local health observation\n");
       printf("  start|stop|restart health - Manage health service\n");
+      printf("  fbset      - Inspect or change screen resolution\n");
+      printf("  man [topic]- Reference manual pages (fnuman)\n");
       printf("  reboot     - Restart this node\n");
+      printf("  poweroff   - Shut this node down\n");
       printf("  logout     - End this session and return to login\n");
       printf("  help       - Show this message\n");
+      printf("\nTip: use Up/Down arrows or PageUp/PageDown keys to browse history,\n");
+      printf("     Ctrl-U to kill the line, Ctrl-C to interrupt input.\n");
       continue;
     }
 
@@ -281,6 +526,11 @@ main(void)
       continue;
     }
 
+    if(command_is(cmd, "poweroff") || command_is(cmd, "shutdown") || command_is(cmd, "halt")) {
+      poweroff();
+      continue;
+    }
+
     // login execs this shell in its service process.  Exiting lets the
     // supervisor reap that process and start a fresh login prompt.
     if(command_is(cmd, "logout")) {
@@ -293,19 +543,32 @@ main(void)
       continue;
     }
 
-    if(cmd[0] == 'i' && cmd[1] == 'n' && cmd[2] == 'f' && cmd[3] == 'o' && (cmd[4] == ' ' || cmd[4] == '\n' || cmd[4] == '\r' || cmd[4] == 0)){
-      printf("\033[33m");
-      printf("       _/\\ \n");
-      printf("     _/   \\_______ \n");
-      printf("   _/  \\_ /  _    \\___     \033[0mOS: %s\n\033[33m", FNU_PRODUCT_NAME);
-      printf("  / \\_   \\\\_/ \\       \\    \033[0mShell: PSH\n\033[33m");
-      printf(" /    \\   \\|< >|      _\\   \033[0mArch: x86_64\n\033[33m");
-      printf("|      \\   \\\\_/      / | \n");
-      printf("|       \\   \\        \\_| \n");
-      printf(" \\       \\   \\        / \n");
-      printf("  \\       \\   \\______/ \n");
-      printf("   \\_______\\__/ \n");
-      printf("\033[0m\n");
+    if(command_is(cmd, "fnufetch") ||
+       (cmd[0] == 'i' && cmd[1] == 'n' && cmd[2] == 'f' && cmd[3] == 'o' &&
+        (cmd[4] == ' ' || cmd[4] == '\n' || cmd[4] == '\r' || cmd[4] == 0))) {
+      char *argv[] = { "fnufetch", 0 };
+      int child_pid = fork1();
+      if (child_pid == 0) {
+        exec("/fnufetch", argv);
+        exec("/usr/bin/fnufetch", argv);
+        dprintf(2, "PSH: fnufetch not found -- falling back to built-in info\n");
+        printf("\033[33m");
+        printf("       _/\\ \n");
+        printf("     _/   \\_______ \n");
+        printf("   _/  \\_ /  _    \\___     \033[0mOS: %s\n\033[33m", FNU_PRODUCT_NAME);
+        printf("  / \\_   \\\\_/ \\       \\    \033[0mShell: PSH (FNU)\n\033[33m");
+        printf(" /    \\   \\|< >|      _\\   \033[0mArch: x86_64\n\033[33m");
+        printf("|      \\   \\\\_/      / | \n");
+        printf("|       \\   \\        \\_| \n");
+        printf(" \\       \\   \\        / \n");
+        printf("  \\       \\   \\______/ \n");
+        printf("   \\_______\\__/ \n");
+        printf("\033[0m\n");
+        exit();
+      }
+      setforeground(child_pid);
+      wait();
+      setforeground(0);
       continue;
     }
 

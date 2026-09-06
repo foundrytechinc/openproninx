@@ -9,6 +9,10 @@ int main(void) {
     gets(name, sizeof(name));
     if (strlen(name) && (name[strlen(name) - 1] == '\n' || name[strlen(name) - 1] == '\r'))
       name[strlen(name) - 1] = 0;
+    if (name[0] == '\0') {
+      sleep(1);
+      continue;
+    }
     printf("Password: ");
     if (read_password(password, sizeof(password)) < 0 || login(name, password) < 0) {
       printf("Login incorrect\n");

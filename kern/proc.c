@@ -472,9 +472,9 @@ void forkret(void) {
     // of a regular process (e.g., they call sleep), and thus cannot
     // be run from main().
     first = 0;
-    iinit(ROOTDEV);
+    iinit(rootdev);
     if (!fs_root_readonly())
-      initlog(ROOTDEV);
+      initlog(rootdev);
     else
       initlog_readonly();
     auth_init();

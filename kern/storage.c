@@ -13,7 +13,7 @@ static int fnu_data_ready;
 static int fnu_root_ready;
 
 const struct ufs2_volume *storage_ufs2_volume(uint device) {
-  if (fnu_root_ready && device == ROOTDEV)
+  if (fnu_root_ready && device == rootdev)
     return &fnu_root_volume;
   if (fnu_data_ready && device == FNU_DATA_DEVICE)
     return &fnu_data_volume;
@@ -24,7 +24,7 @@ static int storage_validate_volume(uint device, struct ufs2_volume *volume) {
   struct blockdev block_device;
   struct ufs2_inode root;
   uint dot;
-  uint64_t sectors = ide_size(device);
+  uint64_t sectors = blockdev_device_size(device);
 
   if (sectors == 0)
     return -1;
@@ -42,7 +42,7 @@ static int storage_validate_volume(uint device, struct ufs2_volume *volume) {
 int storage_mount_root(void) {
   if (fnu_root_ready)
     return 0;
-  if (storage_validate_volume(ROOTDEV, &fnu_root_volume) < 0)
+  if (storage_validate_volume(rootdev, &fnu_root_volume) < 0)
     return -1;
   fnu_root_ready = 1;
   cprintf("FNU Root: UFS2 read-only system volume ready\n");
@@ -50,10 +50,9 @@ int storage_mount_root(void) {
 }
 
 void storageinit(void) {
-  uint64_t sectors = ide_size(FNU_DATA_DEVICE);
+  uint64_t sectors = blockdev_device_size(FNU_DATA_DEVICE);
 
   if (sectors == 0) {
-    cprintf("FNU Data: no optional UFS2 device\n");
     return;
   }
   if (storage_validate_volume(FNU_DATA_DEVICE, &fnu_data_volume) < 0) {

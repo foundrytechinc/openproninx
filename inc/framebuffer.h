@@ -20,15 +20,15 @@
 /* Standard Bochs/QEMU VBE RGB modes, used when firmware mode enumeration
  * is incomplete.  The selected mode never exceeds the requested bounds. */
 #if VBE_MAX_WIDTH >= 1600 && VBE_MAX_HEIGHT >= 1200
-#define VBE_FALLBACK_MODE 0x11e /* 1600x1200x24 */
+#define VBE_FALLBACK_MODE 0x145 /* 1280x1024x32 */
 #elif VBE_MAX_WIDTH >= 1280 && VBE_MAX_HEIGHT >= 1024
-#define VBE_FALLBACK_MODE 0x11b /* 1280x1024x24 */
+#define VBE_FALLBACK_MODE 0x145 /* 1280x1024x32 */
 #elif VBE_MAX_WIDTH >= 1024 && VBE_MAX_HEIGHT >= 768
-#define VBE_FALLBACK_MODE 0x118 /* 1024x768x24 */
+#define VBE_FALLBACK_MODE 0x143 /* 1024x768x32 */
 #elif VBE_MAX_WIDTH >= 800 && VBE_MAX_HEIGHT >= 600
-#define VBE_FALLBACK_MODE 0x115 /* 800x600x24 */
+#define VBE_FALLBACK_MODE 0x140 /* 800x600x32 */
 #else
-#define VBE_FALLBACK_MODE 0x112 /* 640x480x24 */
+#define VBE_FALLBACK_MODE 0x141 /* 640x480x32 */
 #endif
 
 #ifndef __ASSEMBLER__

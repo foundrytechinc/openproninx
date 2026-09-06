@@ -14,8 +14,7 @@ typedef int (*proninx_net_transmit_fn)(struct proninx_net_interface *,
                                        const void *, uint);
 typedef int (*proninx_net_receive_fn)(void *, const void *, uint);
 
-// This is deliberately a PRONINX type, rather than a FreeBSD ifnet. The
-// compatibility layer will translate only at the networking boundary.
+// This is a PRONINX-native interface type used by all NIC drivers.
 struct proninx_net_interface {
   char name[PRONINX_NET_NAME_MAX];
   uint mtu;

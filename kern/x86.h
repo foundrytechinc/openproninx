@@ -5,7 +5,6 @@
 
 static inline uchar inb(ushort port) {
   uchar data;
-
   __asm__ volatile("in %1,%0" : "=a"(data) : "d"(port));
   return data;
 }
@@ -96,8 +95,6 @@ static inline uintptr_t rcr2(void) {
 
 static inline uint xchg(volatile uint *addr, uint newval) {
   uint result;
-
-  // The + in "+m" denotes a read-modify-write operand.
   __asm__ volatile("lock; xchgl %0, %1"
                    : "+m"(*addr), "=a"(result)
                    : "1"(newval)
@@ -111,13 +108,24 @@ static inline uint readeflags(void) {
   return (uint)eflags;
 }
 
+static inline void wrmsr(uint32_t msr, uint64_t val) {
+  uint32_t low = (uint32_t)val;
+  uint32_t high = (uint32_t)(val >> 32);
+  __asm__ volatile("wrmsr" : : "c"(msr), "a"(low), "d"(high));
+}
+
+static inline uint64_t rdmsr(uint32_t msr) {
+  uint32_t low, high;
+  __asm__ volatile("rdmsr" : "=a"(low), "=d"(high) : "c"(msr));
+  return ((uint64_t)high << 32) | low;
+}
+
+static inline void hlt(void) {
+  __asm__ volatile("hlt");
+}
+
 // Layout of the trap frame built on the stack by the
 // hardware and by trapasm.S, and passed to trap().
-//
-// in x86-64, trapframe is:
-// - always aligned in 16-bytes
-// - always contains ss and rsp
-// - err is still optional (some exception push it, but others not)
 struct trapframe {
   // registers
   uint64_t rax;
@@ -135,13 +143,6 @@ struct trapframe {
   uint64_t r13;
   uint64_t r14;
   uint64_t r15;
-
-  // rest of trap frame
-  // remove segment registers because the value is always same (2 for kernel, 4
-  // for user) uint16_t gs; uint16_t padding_gs1; uint32_t padding_gs2; uint16_t
-  // fs; uint16_t padding_fs1; uint32_t padding_fs2; uint16_t es; uint16_t
-  // padding_es1; uint32_t padding_es2; uint16_t ds; uint16_t padding_ds1;
-  // uint32_t padding_ds2;
 
   uint64_t trapno;
 

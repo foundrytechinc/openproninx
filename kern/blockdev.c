@@ -2,6 +2,7 @@
 #include "buf.h"
 #include "defs.h"
 #include "fs.h"
+#include "ramdisk.h"
 
 // bread() is currently addressed in legacy filesystem blocks.  It is safe to
 // use it as a sector transport only while both sizes are identical.  Keep the
@@ -10,6 +11,33 @@
 #if BSIZE != FNU_BLOCKDEV_SECTOR_SIZE
 #error "blockdev requires a sector-addressed backing transport"
 #endif
+
+uint64_t blockdev_device_size(uint device) {
+  if (device < DEV_IDE_END) {
+    return ide_size(device);
+  } else if (device >= DEV_SATA_START && device < DEV_SATA_END) {
+    return ahci_size(device - DEV_SATA_START);
+  } else if (device >= DEV_NVME_START && device < DEV_NVME_END) {
+    return nvme_size(device - DEV_NVME_START);
+  } else if (device == DEV_RAMDISK) {
+    return ramdisk_size();
+  }
+  return 0;
+}
+
+void blockdev_rw(struct buf *b) {
+  if (b->dev < DEV_IDE_END) {
+    iderw(b);
+  } else if (b->dev >= DEV_SATA_START && b->dev < DEV_SATA_END) {
+    ahcirw(b);
+  } else if (b->dev >= DEV_NVME_START && b->dev < DEV_NVME_END) {
+    nvmerw(b);
+  } else if (b->dev == DEV_RAMDISK) {
+    ramdiskrw(b);
+  } else {
+    panic("blockdev_rw: unknown device");
+  }
+}
 
 int blockdev_read(const struct blockdev *volume, uint64_t offset, void *dst,
                   uint length) {

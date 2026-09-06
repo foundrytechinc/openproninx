@@ -5,7 +5,7 @@
 #include "spinlock.h"
 #include "x86.h"
 
-// Interrut descriptor table (shared by all CPUs).
+// Interrupt descriptor table (shared by all CPUs).
 
 struct gatedesc idt[256];
 extern uintptr_t vectors[]; // in vectors.S: array of 256 entry pointers
@@ -39,19 +39,15 @@ void trap(struct trapframe *tf) {
 
   switch (tf->trapno) {
   case T_IRQ0 + IRQ_TIMER:
-    // interval of ticks is 10ms in QEMU.
-    // it depends on bus frequency according to
-    // https://wiki.osdev.org/APIC_timer. bus frequency is always 1 GHz in
-    // QEMU?: https://www.mail-archive.com/qemu-devel@nongnu.org/msg711610.html
     if (cpuid() == 0) {
       acquire(&tickslock);
       ticks++;
       wakeup(&ticks);
       release(&tickslock);
-      // Legacy PCI INTx routing is firmware-dependent.  Polling used rings
-      // provides a bounded (10 ms) fallback while preserving the IRQ path.
-      virtio_net_poll();
+      // Poll registered drivers on timer ticks as fallback
+      driver_poll_all();
       proninx_lwip_timers();
+      console_flush_if_dirty();
     }
     lapiceoi();
     break;
@@ -75,19 +71,10 @@ void trap(struct trapframe *tf) {
     lapiceoi();
     break;
 
-    // case T_IRQ0 + 7:
-    // case T_IRQ0 + IRQ_SPURIOUS:
-    //   cprintf("cpu%d: spurious interrupt at %x:%x\n",
-    //           cpuid(), tf->cs, tf->eip);
-    //   lapiceoi();
-    //   break;
-
   default:
-    // VirtIO uses the PCI interrupt line assigned by firmware/QEMU.  It is
-    // commonly IRQ 11, but is not architecturally fixed.
+    // Dispatch interrupt through driver framework
     if (tf->trapno >= T_IRQ0 && tf->trapno < T_IRQ0 + IRQ_SPURIOUS &&
-        virtio_net_handles_irq(tf->trapno - T_IRQ0)) {
-      virtio_net_intr();
+        driver_dispatch_irq(tf->trapno - T_IRQ0)) {
       lapiceoi();
       break;
     }
@@ -105,14 +92,11 @@ void trap(struct trapframe *tf) {
   }
 
   // Force process exit if it has been killed and is in user space.
-  // (If it is still executing in the kernel, let it keep running
-  // until it gets to the regular system call return.)
   if (myproc() && myproc()->killed && (tf->cs & 3) == DPL_USER) {
     exit();
   }
 
   // Force process to give up CPU on clock tick.
-  // If interrupts were on while locks held, would need to check nlock.
   if (myproc() && myproc()->state == RUNNING &&
       tf->trapno == T_IRQ0 + IRQ_TIMER) {
     yield();

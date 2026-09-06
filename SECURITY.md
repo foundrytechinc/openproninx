@@ -2,7 +2,7 @@
 
 ## Current status
 
-**FNU/PRONINX Core 0.1.0-dev must not be exposed to an untrusted network or
+**FNU/PRONINX Core 0.1.5-dev must not be exposed to an untrusted network or
 used for confidential data.**
 
 The current code predates the Core security architecture. It has no secure

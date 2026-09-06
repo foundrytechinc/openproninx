@@ -90,7 +90,7 @@ struct buf *bread(uint dev, uint blockno) {
 
   b = bget(dev, blockno);
   if ((b->flags & B_VALID) == 0) {
-    iderw(b);
+    blockdev_rw(b);
   }
   return b;
 }
@@ -101,7 +101,7 @@ void bwrite(struct buf *b) {
     panic("bwrite");
   }
   b->flags |= B_DIRTY;
-  iderw(b);
+  blockdev_rw(b);
 }
 
 // Release a locked buffer.

@@ -16,7 +16,7 @@ struct mp {
   uint8_t type;      // MP system config type
   uint8_t imcrp;
   uint8_t reserved[3];
-};
+} __attribute__((packed));
 
 // MPsepc 4.2 MP Configuration Table Header
 struct mpconf {
@@ -32,7 +32,7 @@ struct mpconf {
   uint16_t xlength;    // extended table length
   uint8_t xchecksum;   // extended table checksum
   uint8_t reserved;
-};
+} __attribute__((packed));
 
 // MPspec 4.3.1 Processor Entries
 struct mpproc {
@@ -44,7 +44,7 @@ struct mpproc {
   char signature[4]; // CPU signature
   uint32_t feature;  // feature flags from CPUID instruction
   uint8_t reserved[8];
-};
+} __attribute__((packed));
 
 // MPspec 4.3.3 I/O APIC Entries
 struct mpioapic {
@@ -53,7 +53,7 @@ struct mpioapic {
   uint8_t version; // I/O APIC version
   uint8_t flags;   // I/O APIC flags
   uint32_t addr;   // I/O APIC address
-};
+} __attribute__((packed));
 
 // Table entry types
 #define MPPROC 0x00   // One per processor

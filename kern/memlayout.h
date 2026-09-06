@@ -2,14 +2,14 @@
 #define PRONINX_X86_64_MEMLAYOUT_H
 
 /*
- * This file contains definitions for memory management in our OS,
- * which are relevant to both the kernel and user-mode software.
+ * Memory layout definitions for OpenProninx x86-64.
  */
 
 // Start of extended memory
 #define EXTMEM 0x100000
-// address for other devices are at high addresses such as ioapic and lapic
-#define DEVSPACE_PHYS 0xfe000000
+
+// Address for devices and PCI MMIO window (up to 4 GiB)
+#define DEVSPACE_PHYS 0xe0000000
 #define DEVSPACE_P2V(a) ((void *)(((uint64_t)(a)) + 0xffffffff00000000))
 
 // Key addresses for address space layout (see kmap in vm.c for layout)
@@ -35,7 +35,7 @@
  *
  *    256 TB -------->  +------------------------------+
  *                      |                              | RW/--
- *     DEVSPACE ----->  +------------------------------+ 0xfffffffffe000000
+ *     DEVSPACE ----->  +------------------------------+ 0xffffffffe0000000
  *                      :                              :
  *     phys_top ----->  +------------------------------+
  *                      |                              | RW/--
@@ -47,13 +47,6 @@
  *                      :              .               :
  *  start of    ---->   +------------------------------+ 0xffff800000000000
  *  kernel space
- *
- *
- * The current implementation does not allow to use physical memory up to
- * 0x7fffffff (2 GiB). Use an other memory layout such as Linux's one to use
- * more than 2GiB physical memory. ref.
- * http://mmi.hatenablog.com/entry/2017/03/21/151320
- *
  */
 
 #endif /* PRONINX_X86_64_MEMLAYOUT_H */

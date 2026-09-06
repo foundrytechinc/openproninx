@@ -22,6 +22,7 @@ SYSCALL(malloc)
 SYSCALL(free)
 SYSCALL(info)
 SYSCALL(reboot)
+SYSCALL(poweroff)
 SYSCALL(procinfo)
 SYSCALL(ioctl)
 SYSCALL(getdents)
@@ -64,5 +65,8 @@ SYSCALL(tcp_send)
 SYSCALL(tcp_recv)
 SYSCALL(tcp_close)
 SYSCALL(dns_resolve)
+/* FNU utility syscalls — fnudate, fnudf */
+SYSCALL(rtctime)
+SYSCALL(df)
 
 .section .note.GNU-stack,"",@progbits

@@ -9,16 +9,16 @@ OBJCOPY?=objcopy
 OBJDUMP?=objdump
 QEMU?=qemu-system-x86_64
 GDB?=gdb
-QEMU_VIDEO_OPTS?=-vga std -global VGA.vgamem_mb=16
+QEMU_VIDEO_OPTS?=-device virtio-vga -display gtk,zoom-to-fit=off
 # A console does not benefit from a full-HD canvas: it leaves most of the
 # display empty and makes the QEMU window unnecessarily large.  Callers may
 # still override these limits for a different display mode.
 VBE_MAX_WIDTH?=1024
 VBE_MAX_HEIGHT?=768
-CPUS?=1
-.if ${CPUS} != 1
-.error SMP is not implemented: build and run with CPUS=1
-.endif
+CPUS?=2
+QEMU_SMP_OPTS?=-smp cpus=${CPUS},sockets=${CPUS}
+QEMU_NET_OPTS?=-netdev user,id=proninx-net0 -device e1000,netdev=proninx-net0
+
 
 CFLAGS+=-fno-pic -static -fno-builtin -fno-strict-aliasing -MD -ggdb
 CFLAGS+=-fno-asynchronous-unwind-tables -fno-unwind-tables
@@ -38,6 +38,7 @@ BOOT_BLOCK=${OBJDIR}/boot/bootblock
 KERNEL=${OBJDIR}/kern/kernel
 LIBRARY=${OBJDIR}/lib/libPRONINX_x86_64.a
 INITCODE=${OBJDIR}/kern/initcode
+ENTRYOTHER=${OBJDIR}/kern/entryother
 MKFS=${OBJDIR}/kern/mkfs
 PRONINX_IMG=${OBJDIR}/PRONINX.img
 FS_IMG=${OBJDIR}/fs.img
@@ -63,6 +64,7 @@ BOOT_OBJS+=${OBJDIR}/${src:R}.o
 .for src in ${KERN_SRCS} ${KERN_ASM_SRCS}
 KERN_OBJS+=${OBJDIR}/${src:R}.o
 .endfor
+KERN_OBJS+=${OBJDIR}/kern/ramdisk_img.o
 .for src in ${LWIP_SRCS}
 LWIP_OBJS+=${OBJDIR}/${src:R}.o
 .endfor
@@ -109,14 +111,25 @@ ${INITCODE}: kern/initcode.S
 	${OBJCOPY} -S -O binary ${.TARGET}.out ${.TARGET}
 	${OBJDUMP} -S ${.TARGET}.o > ${.TARGET}.asm
 
-${KERNEL}: ${KERN_OBJS} ${LWIP_OBJS} kern/kernel.ld ${INITCODE} ${LIBRARY}
+${ENTRYOTHER}: kern/entryother.S
 	@mkdir -p ${.TARGET:H}
-	${LD} ${KERN_LDFLAGS} -T kern/kernel.ld -o ${.TARGET} ${KERN_OBJS} ${LWIP_OBJS} -L${OBJDIR}/lib -lPRONINX_x86_64 -b binary ${INITCODE}
+	${CC} ${CFLAGS} -m32 -nostdinc -I. -c -o ${.TARGET}.o ${.ALLSRC}
+	${LD} -m elf_i386 -N -e start -Ttext 0x7000 -o ${.TARGET}.out ${.TARGET}.o
+	${OBJCOPY} -S -O binary ${.TARGET}.out ${.TARGET}
+	${OBJDUMP} -S ${.TARGET}.o > ${.TARGET}.asm
+
+${OBJDIR}/kern/ramdisk_img.o: kern/ramdisk_img.S ${FS_IMG}
+	@mkdir -p ${.TARGET:H}
+	${CC} ${KERN_CFLAGS} -DFS_IMG_PATH='"${FS_IMG}"' -fno-pic -Ikern -c -o ${.TARGET} kern/ramdisk_img.S
+
+${KERNEL}: ${KERN_OBJS} ${LWIP_OBJS} kern/kernel.ld ${INITCODE} ${ENTRYOTHER} ${LIBRARY}
+	@mkdir -p ${.TARGET:H}
+	${LD} ${KERN_LDFLAGS} -T kern/kernel.ld -o ${.TARGET} ${KERN_OBJS} ${LWIP_OBJS} -L${OBJDIR}/lib -lPRONINX_x86_64 -b binary ${INITCODE} ${ENTRYOTHER}
 	${OBJDUMP} -S ${.TARGET} > ${.TARGET}.asm
 .for src in ${KERN_SRCS} ${KERN_ASM_SRCS} ${LWIP_SRCS}
 ${OBJDIR}/${src:R}.o: ${src}
 	@mkdir -p ${.TARGET:H}
-	${CC} ${KERN_CFLAGS} -fno-pic -Ikern -Ikern/net -Ikern/net/lwip/port/include -Ithird_party/lwip/src/include -c -o ${.TARGET} ${.ALLSRC}
+	${CC} ${KERN_CFLAGS} -fno-pic -Ikern -Ikern/net -Ikern/storage -Ikern/net/lwip/port/include -Ithird_party/lwip/src/include -c -o ${.TARGET} ${.ALLSRC}
 .endfor
 
 kern/vectors.S: kern/vectors.sh FORCE
@@ -124,6 +137,7 @@ kern/vectors.S: kern/vectors.sh FORCE
 ${MKFS}: kern/mkfs.c kern/fs.h kern/param.h inc/dir.h inc/stat.h inc/types.h
 	@mkdir -p ${.TARGET:H}
 	${CC} -std=c11 -Wall -Wextra -Wno-format -Wno-unused -Wno-address-of-packed-member -Werror -I. -o ${.TARGET} kern/mkfs.c
+	chmod +x ${.TARGET}
 
 .for src in ${USER_LIB_SRCS}
 ${OBJDIR}/${src:R}.o: ${src}
@@ -143,7 +157,7 @@ ${FS_IMG}: ${MKFS} ${USER_BINS}
 	${.CURDIR}/${MKFS} ${.TARGET} ${USER_BINS:S,^,${.CURDIR}/,}
 ${PRONINX_IMG}: ${BOOT_BLOCK} ${KERNEL}
 	@mkdir -p ${.TARGET:H}
-	dd if=/dev/zero of=${.TARGET} count=10000
+	dd if=/dev/zero of=${.TARGET} count=20000
 	dd if=${BOOT_BLOCK} of=${.TARGET} conv=notrunc
 	dd if=${KERNEL} of=${.TARGET} seek=${KERNEL_START_SECTOR} conv=notrunc
 FORCE:
@@ -156,10 +170,11 @@ clean:
 	rm -rf ${OBJDIR}
 format:
 	./format.sh
+QEMU_EXTRA_OPTS?=
 qemu: ${IMAGES}
-	${QEMU} ${QEMU_VIDEO_OPTS} -drive file=${PRONINX_IMG},index=0,media=disk,format=raw -drive file=${FS_IMG},if=ide,index=1,media=disk,format=raw -serial mon:stdio -smp ${CPUS}
+	${QEMU} ${QEMU_VIDEO_OPTS} ${QEMU_SMP_OPTS} ${QEMU_NET_OPTS} -drive file=${PRONINX_IMG},index=0,media=disk,format=raw ${QEMU_EXTRA_OPTS} -serial mon:stdio
 smoke: ${IMAGES}
-	./tools/smoke-qemu.sh ${QEMU} ${PRONINX_IMG} ${FS_IMG}
+	./tools/smoke-qemu.sh ${QEMU} ${PRONINX_IMG}
 system-image: ci
 	./tools/build-ufs2-system.sh ${OBJDIR}/fnu-system.ufs
 si: system-image
@@ -168,4 +183,4 @@ ${.OBJDIR}/.gdbinit: .gdbinit.tmpl
 gdb: .gdbinit
 	${GDB} -n -x .gdbinit
 qemu-gdb: ${IMAGES} .gdbinit
-	${QEMU} ${QEMU_VIDEO_OPTS} -drive file=${PRONINX_IMG},index=0,media=disk,format=raw -drive file=${FS_IMG},if=ide,index=1,media=disk,format=raw -serial mon:stdio -gdb tcp::12345 -S -smp ${CPUS}
+	${QEMU} ${QEMU_VIDEO_OPTS} ${QEMU_SMP_OPTS} ${QEMU_NET_OPTS} -drive file=${PRONINX_IMG},index=0,media=disk,format=raw ${QEMU_EXTRA_OPTS} -serial mon:stdio -gdb tcp::12345 -S

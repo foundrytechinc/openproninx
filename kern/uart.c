@@ -11,15 +11,15 @@ static int uart; // is there a uart?
 void uartinit(void) {
   char *p;
 
-  // Turn off the FIFO
-  outb(COM1 + 2, 0);
+  // Turn on 16550A FIFO: enable FIFO, clear TX/RX, 14-byte threshold
+  outb(COM1 + 2, 0xC7);
 
-  // 9600 baud, 8 data bits, 1 stop bit, parity off.
+  // 115200 baud, 8 data bits, 1 stop bit, parity off.
   outb(COM1 + 3, 0x80); // Unlock divisor
-  outb(COM1 + 0, 115200 / 9600);
+  outb(COM1 + 0, 115200 / 115200); // 115200 baud divisor = 1
   outb(COM1 + 1, 0);
   outb(COM1 + 3, 0x03); // Lock divisor, 8 data bits.
-  outb(COM1 + 4, 0);
+  outb(COM1 + 4, 0x0B); // Modem control: DTR + RTS + OUT2
   outb(COM1 + 1, 0x01); // Enable receive interrupts.
 
   // If status is 0xFF, no serial port.
@@ -47,7 +47,7 @@ void uartputc(int c) {
     return;
   }
   for (i = 0; i < 128 && !(inb(COM1 + 5) & 0x20); i++) {
-    microdelay(10);
+    // Fast non-blocking polling
   }
   outb(COM1 + 0, c);
 }

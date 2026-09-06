@@ -11,6 +11,7 @@ char *strncpy(char *s, const char *t, size_t n);
 char *safestrcpy(char *s, const char *t, int n);
 size_t strlen(const char *s);
 int strncmp(const char *p, const char *q, size_t n);
+int strcmp(const char *p, const char *q);
 char *strchr(const char *s, int c);
 
 #endif /* ifndef PRONINX_X86_64_STRING_H */

@@ -1,43 +1,66 @@
-# PRONINX networking integration
+# OpenProninx Networking Subsystem
 
-## Boundary
+## 1. Overview & Architecture
 
-PRONINX retains its own boot path, memory manager, scheduler, VFS, drivers and
-userspace. FreeBSD networking code is a vendored protocol component, not an
-operating-system base. Its immutable source lives in `third_party/freebsd-net`;
-all adaptation is PRONINX-owned code in `kern/net`.
+OpenProninx integrates a modular network stack built upon the PRONINX driver framework, an adapter layer (`kern/net/adapter.c`), and a vendored `lwIP` (v2.2.1) protocol engine.
 
-## Source provenance
+```
++-------------------------------------------------------------+
+|                     Userspace Applications                  |
+|    (ping, netinfo, netconfig, resolve, tcpecho, udpecho)    |
++-------------------------------------------------------------+
+                              |
+                     System Call Boundary
+                              |
++-------------------------------------------------------------+
+|                Kernel Protocol Stack (lwIP)                 |
+|            DHCP, DNS, ARP, IPv4, ICMP, UDP, TCP             |
++-------------------------------------------------------------+
+                              |
+                     Adapter Layer (adapter.c)
+                              |
++-------------------------------------------------------------+
+|                 OpenProninx Driver Framework                |
+|               (driver.h / driver.c / pci.c)                 |
++-------------------------------------------------------------+
+                 /                           \
++---------------------------------+  +------------------------+
+|   Intel E1000 Gigabit Driver    |  |  VirtIO-Net PCI Driver |
+|       (em0 - e1000.c)           |  |   (vtnet0 - virtio_net)|
++---------------------------------+  +------------------------+
+                 \                           /
++-------------------------------------------------------------+
+|                   Underlying Hardware / QEMU                |
++-------------------------------------------------------------+
+```
 
-The initial vendor import is pinned to FreeBSD revision
-`4aea6ea2eb400737837ff8d22c25688f88c7966c` and was copied without local
-changes. See `THIRD_PARTY_NOTICES.md` for the selected directories and
-licenses.
+---
 
-## Delivery order
+## 2. Supported Network Interface Cards (NICs)
 
-1. Define the PRONINX network-interface, DMA-buffer, lock, timer and memory
-   adapter APIs. The initial interface and packet-I/O boundary is now in
-   `kern/net/adapter.*`; no FreeBSD internal kernel subsystem is imported.
-2. Implement a PRONINX VirtIO-net driver and test link, ARP, ICMP and packet
-   loss in QEMU.
-3. Bind the imported mbuf, interface and IPv4/UDP paths to that adapter.
-4. Add TCP, IPv6, firewalling, routing and the PRONINX socket ABI with packet
-   fuzzing and interoperability tests.
-5. Add a PRONINX driver for one certified NIC with MSI-X, RSS,
-   multiqueue DMA and NUMA-aware queue placement.
+### Intel E1000 Gigabit Ethernet (`em0`) - Primary Driver
+- **Supported Chips:** Intel 82540EM, 82545EM, 82543GC, 82574L, 82541EI, 82541ER.
+- **Features:** 
+  - Hardware ring buffer DMA (64-entry TX and 64-entry RX rings).
+  - Hardware checksumming and CRC striping (`SECRC`).
+  - Automatic link negotiation (`SLU`, `ASDE`, `FD`).
+  - Dual MAC acquisition (RAL/RAH register read with EEPROM fallback).
+- **QEMU invocation:** `-netdev user,id=proninx-net0 -device e1000,netdev=proninx-net0`.
 
-The stack must be updated as a tracked vendor operation: pin an upstream
-revision, preserve all notices, review CVEs and run protocol, fuzz, throughput
-and p99-latency regression tests before release.
+### VirtIO-Net PCI (`vtnet0`) - Secondary / Virtualized Driver
+- **Supported Architecture:** Legacy VirtIO PCI Transport (`0x1af4:0x1000`).
+- **Features:** Virtqueue split ring buffer (Available, Used, Descriptor rings), dynamic TX reclamation, RX buffer refilling.
+- **QEMU invocation:** `-netdev user,id=proninx-net0 -device virtio-net-pci,netdev=proninx-net0`.
 
-## Current implementation
+---
 
-The QEMU path includes a VirtIO-net reference driver and an lwIP binding with
-DHCP, ARP, IPv4, ICMP, UDP, TCP, and DNS support. Userspace tools include
-`ping`, `netinfo`, `netconfig`, `resolve`, `udpecho`, and `tcpecho`.
+## 3. Userspace Networking Tools
 
-UDP and TCP handles are process-owned kernel capabilities, but are not file
-descriptors because the VFS has no socket file type yet. The implementation is
-bounded to 8 UDP slots and 8 TCP slots with fixed receive queues. TLS, SSH,
-IPv6, firewalling, routing policy, and hardened remote access are absent.
+| Command | Description |
+| :--- | :--- |
+| `netinfo` | Displays active network interfaces, MAC addresses, IPv4 address, Gateway, DNS server, DHCP state, and frame statistics. |
+| `netconfig` | Manually configures static IPv4 address, netmask, gateway, and DNS, or restarts DHCP client. |
+| `ping <ip>` | Sends ICMP Echo requests and reports round-trip time in milliseconds. |
+| `resolve <host>` | Resolves domain names to IPv4 addresses using DNS. |
+| `tcpecho <port>` | Starts a TCP echo server. |
+| `udpecho <port>` | Starts a UDP echo server. |

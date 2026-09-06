@@ -1,6 +1,12 @@
 #ifndef PRONINX_X86_64_MMU_H
 #define PRONINX_X86_64_MMU_H
 
+// Control registers
+#define CR0_PE 0x00000001 // Protection Enable
+#define CR0_WP 0x00010000 // Write Protect
+#define CR0_PG 0x80000000 // Paging
+#define CR4_PAE 0x00000020 // Physical Address Extension
+
 // Eflags register
 #define FL_IF 0x00000200 // Interrupt Enable
 
@@ -114,10 +120,13 @@ struct tssdesc {
 #define PGROUNDDOWN(a) (((a)) & ~(PGSIZE - 1))
 
 // Page table/directory entry flags.
-#define PTE_P 0x001  // Present
-#define PTE_W 0x002  // Writeable
-#define PTE_U 0x004  // User
-#define PTE_PS 0x080 // Page Size
+#define PTE_P 0x001   // Present
+#define PTE_W 0x002   // Writeable
+#define PTE_U 0x004   // User
+#define PTE_PWT 0x008 // Page Write-Through / PAT Bit 0 (Write-Combining when PAT1=WC)
+#define PTE_PCD 0x010 // Page Cache Disable
+#define PTE_PS 0x080  // Page Size
+
 
 // The page alighned physical address of the frame or the next page table
 #define PTE_FLAGS(pte) ((uintptr_t)(pte)&0xFFF)

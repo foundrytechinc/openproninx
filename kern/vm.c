@@ -37,7 +37,7 @@ static struct kmap {
   uintptr_t phys_start;
   uintptr_t phys_end;
   int perm;
-} kmap[5];
+} kmap[8];
 static int nkmap;
 
 // Initialize kmap at runtime because V2P() cannot be used in static initializers.
@@ -63,27 +63,41 @@ void init_kmap(void) {
   kmap[2].phys_end = phys_top;
   kmap[2].perm = PTE_W;
 
-  kmap[3].virt = DEVSPACE_P2V(DEVSPACE_PHYS);
-  kmap[3].phys_start = DEVSPACE_PHYS;
-  kmap[3].phys_end = 0x100000000;
-  kmap[3].perm = PTE_W;
-
-  nkmap = 4;
+  nkmap = 3;
   fb_phys = framebuffer_phys();
-  if (fb_phys) {
+  if (fb_phys && fb_phys >= DEVSPACE_PHYS) {
     fb_start = PGROUNDDOWN((uintptr_t)fb_phys);
     fb_end = PGROUNDUP((uintptr_t)fb_phys + framebuffer_size());
+    if (fb_end > 0x100000000ULL)
+      fb_end = 0x100000000ULL;
 
-    /* The final 32 MiB is already covered by the generic device mapping. */
-    if (fb_start < DEVSPACE_PHYS) {
-      if (fb_end > DEVSPACE_PHYS)
-        fb_end = DEVSPACE_PHYS;
-      kmap[nkmap].virt = DEVSPACE_P2V(fb_start);
-      kmap[nkmap].phys_start = fb_start;
-      kmap[nkmap].phys_end = fb_end;
+    if (fb_start > DEVSPACE_PHYS) {
+      kmap[nkmap].virt = DEVSPACE_P2V(DEVSPACE_PHYS);
+      kmap[nkmap].phys_start = DEVSPACE_PHYS;
+      kmap[nkmap].phys_end = fb_start;
       kmap[nkmap].perm = PTE_W;
       nkmap++;
     }
+
+    kmap[nkmap].virt = DEVSPACE_P2V(fb_start);
+    kmap[nkmap].phys_start = fb_start;
+    kmap[nkmap].phys_end = fb_end;
+    kmap[nkmap].perm = PTE_W | PTE_PWT; // Write-Combining via PAT entry 1
+    nkmap++;
+
+    if (fb_end < 0x100000000ULL) {
+      kmap[nkmap].virt = DEVSPACE_P2V(fb_end);
+      kmap[nkmap].phys_start = fb_end;
+      kmap[nkmap].phys_end = 0x100000000ULL;
+      kmap[nkmap].perm = PTE_W;
+      nkmap++;
+    }
+  } else {
+    kmap[nkmap].virt = DEVSPACE_P2V(DEVSPACE_PHYS);
+    kmap[nkmap].phys_start = DEVSPACE_PHYS;
+    kmap[nkmap].phys_end = 0x100000000ULL;
+    kmap[nkmap].perm = PTE_W;
+    nkmap++;
   }
 }
 
@@ -92,10 +106,11 @@ void init_kmap(void) {
 void seginit(void) {
   struct cpu *c;
 
-  // Map "logical" addresses to virtual addresses using identity map.
-  // Cannot share a CODE descriptor for both kernel and user
-  // because it would have to have DPL_USR, but the CPU forbids
-  // an interrupt from CPL=0 to DPL=3.
+  // Configure Page Attribute Table (PAT):
+  // PA0=WB(06), PA1=WC(01), PA2=UC-(07), PA3=UC(00)
+  // PA4=WB(06), PA5=WC(01), PA6=UC-(07), PA7=UC(00)
+  wrmsr(0x277, 0x0007010600070106ULL);
+
   c = &cpus[cpuid()];
   c->gdt[SEG_KCODE] = SEG(STA_X | STA_R, 0, 0xffffffff, 0);
   c->gdt[SEG_KDATA] = SEG(STA_W, 0, 0xffffffff, 0);
@@ -473,4 +488,12 @@ int copyin(pte_t *pgdir, void *p, uintptr_t va, size_t len) {
     va = va0 + PGSIZE;
   }
   return 0;
+}
+
+void *ioremap(uintptr_t phys_addr, uint size) {
+  (void)size;
+  if (phys_addr >= DEVSPACE_PHYS) {
+    return DEVSPACE_P2V(phys_addr);
+  }
+  return P2V(phys_addr);
 }

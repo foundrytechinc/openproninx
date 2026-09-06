@@ -105,13 +105,6 @@ void lapicinit(void) {
   // Ack any outstanding interrupts.
   lapiceoi();
 
-  // Send an Init Level De-Assert to synchronise arbitration ID's.
-  lapicw(ICRHI, 0);
-  lapicw(ICRLO, ICR_DEST_BCAST | ICR_DELIVM_INIT | ICR_TRIGGER_LEVEL);
-  while (lapic[ICRLO] & ICR_DELIVS) {
-    ;
-  }
-
   // Enable interrupts on the APIC (but not on the processor).
   lapicw(TPR, 0);
 }
@@ -122,10 +115,29 @@ int lapicid(void) {
   return lapic[ID] >> 24;
 }
 
-// Stupid I/O delay routine necessitated by historical PC design flaws
+// Microsecond I/O delay using diagnostic port 0x84 reads (~1-1.25 us each)
 void microdelay(int us) {
-  inb(0x84);
-  inb(0x84);
-  inb(0x84);
-  inb(0x84);
+  for (int i = 0; i < us; i++) {
+    inb(0x84);
+  }
 }
+
+void lapicstartap(uchar apicid, uint32_t addr) {
+  int i;
+
+  // "Universal startup algorithm."
+  // Send INIT (level-triggered) interrupt to reset other CPU.
+  lapicw(ICRHI, apicid << 24);
+  lapicw(ICRLO, ICR_DELIVM_INIT | ICR_TRIGGER_LEVEL | ICR_LEVEL_ASSERT);
+  microdelay(200);
+  lapicw(ICRLO, ICR_DELIVM_INIT | ICR_TRIGGER_LEVEL);
+  microdelay(100);
+
+  // Send startup IPI (twice!) to enter code.
+  for (i = 0; i < 2; i++) {
+    lapicw(ICRHI, apicid << 24);
+    lapicw(ICRLO, ICR_DELIVM_STARTUP | (addr >> 12));
+    microdelay(200);
+  }
+}
+

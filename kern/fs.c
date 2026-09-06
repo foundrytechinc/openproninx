@@ -28,6 +28,7 @@ static void itrunc(struct inode *);
 // there should be one superblock per disk device, but we run with
 // only one device
 struct superblock sb;
+uint rootdev = ROOTDEV;
 int root_fs_type = FS_NATIVE;
 
 int fs_root_readonly(void) { return root_fs_type == FS_UFS2; }
@@ -500,6 +501,27 @@ static void itrunc(struct inode *ip) {
     ip->addrs[NDIRECT] = 0;
   }
 
+  if (ip->addrs[NDIRECT + 1]) {
+    bp = bread(ip->dev, ip->addrs[NDIRECT + 1]);
+    a = (uint *)bp->data;
+    for (uint j = 0; j < NINDIRECT; j++) {
+      if (a[j]) {
+        struct buf *bp2 = bread(ip->dev, a[j]);
+        uint *b = (uint *)bp2->data;
+        for (uint k = 0; k < NINDIRECT; k++) {
+          if (b[k]) {
+            bfree(ip->dev, b[k]);
+          }
+        }
+        brelse(bp2);
+        bfree(ip->dev, a[j]);
+      }
+    }
+    brelse(bp);
+    bfree(ip->dev, ip->addrs[NDIRECT + 1]);
+    ip->addrs[NDIRECT + 1] = 0;
+  }
+
   ip->size = 0;
   iupdate(ip);
 }
@@ -527,6 +549,29 @@ static uint bmap(struct inode *ip, uint bn) {
     a = (uint *)bp->data;
     if ((addr = a[bn]) == 0) {
       a[bn] = addr = balloc(ip->dev);
+      log_write(bp);
+    }
+    brelse(bp);
+    return addr;
+  }
+  bn -= NINDIRECT;
+
+  if (bn < NINDIRECT * NINDIRECT) {
+    if ((addr = ip->addrs[NDIRECT + 1]) == 0) {
+      ip->addrs[NDIRECT + 1] = addr = balloc(ip->dev);
+    }
+    bp = bread(ip->dev, addr);
+    a = (uint *)bp->data;
+    if ((addr = a[bn / NINDIRECT]) == 0) {
+      a[bn / NINDIRECT] = addr = balloc(ip->dev);
+      log_write(bp);
+    }
+    brelse(bp);
+
+    bp = bread(ip->dev, addr);
+    a = (uint *)bp->data;
+    if ((addr = a[bn % NINDIRECT]) == 0) {
+      a[bn % NINDIRECT] = addr = balloc(ip->dev);
       log_write(bp);
     }
     brelse(bp);

@@ -76,7 +76,15 @@ static struct mpconf *mpconfig(struct mp **pmp) {
   return conf;
 }
 
+static struct mpconf *saved_mp_conf;
+
 void mpinit(void) {
+  // First try modern ACPI MADT multiprocessor initialization
+  if (acpi_mp_init() == 0) {
+    return;
+  }
+
+  // Fallback to Intel MultiProcessor Specification (MP Spec 1.4)
   uchar *p, *e;
   int ismp;
   struct mp *mp;
@@ -87,6 +95,7 @@ void mpinit(void) {
   if ((mp_conf = mpconfig(&mp)) == 0) {
     panic("Expect to run on an SMP");
   }
+  saved_mp_conf = mp_conf;
   ismp = 1;
   lapic = (uint32_t *)DEVSPACE_P2V((uintptr_t)mp_conf->lapicaddr);
 
@@ -118,32 +127,81 @@ void mpinit(void) {
     }
   }
 
-  cprintf("mp: 0x%p, mpconf: 0x%p, lapic: 0x%p, ioapic: 0x%p\n", mp, mp_conf,
-          lapic, ioapic);
-  cprintf("ncpu = %d\n", ncpu);
-
   if (!ismp) {
     panic("Didn't find a suitable machine");
   }
 
   if (mp->imcrp) {
-    // MPspec 3.6.2.1 PIC Mode
-    // the hardware for PIC Mode bypasses the APIC components by using an
-    // interrupt mode configuration register (IMCR).
-    // ...
-    // Before entring Symmetric I/O Mode, either the BIOS or the operating
-    // system must switch out of PIC Mode by changing the IMCR.
-    // ...
-    // The IMCR is supported by two read/writable or write-only I/O ports, 22h
-    // and 23h, which receive address and data respectively. To access the IMCR,
-    // write a value of 70h to I/O port 22h, which selects the IMCR. Then write
-    // the data to I/O port 23h. The power-on default value is zero, which
-    // connects the NMI and 8259 INTR lines directly to the BSP. Writing a value
-    // of 01h forces the NMI and 8259 INTR signals to pass through the APIC.
-    //
-    // mp->imcrp == 0 when the OS is running on QEMU, so it runs as Virtual Wire
-    // Mode not PIC Mode.
     outb(0x22, 0x70);          // Select IMCR
     outb(0x23, inb(0x23) | 1); // Mask external interrupts
   }
 }
+
+extern char _binary_obj_kern_entryother_start[];
+extern char _binary_obj_kern_entryother_size[];
+
+static void mpenter(void) {
+  switchkvm();
+  seginit();
+  lapicinit();
+  mpmain();
+}
+
+/*
+ * Statistical fact:
+ * >100% of multithreaded processors are multithreaded.
+ */
+// Start the non-boot (AP) processors.
+void startothers(void) {
+  uint8_t *code;
+  struct cpu *c;
+  char *stack;
+  uint64_t *p4, *p3;
+
+  // Write entry code to physical 0x7000.
+  code = P2V(0x7000);
+  memmove(code, _binary_obj_kern_entryother_start,
+          (uintptr_t)_binary_obj_kern_entryother_size);
+
+  // Set up AP boot page table at 0x8000 (PML4) and 0x9000 (PDPT)
+  p4 = (uint64_t *)P2V(0x8000);
+  p3 = (uint64_t *)P2V(0x9000);
+
+  memset(p4, 0, PGSIZE);
+  memset(p3, 0, PGSIZE);
+
+  // Entry 0 in PML4 -> maps 0..512GB to PDPT at physical 0x9000
+  p4[0] = 0x9000 | PTE_P | PTE_W;
+
+  // Entry 511 in PML4 -> maps higher-half to PDPT at physical 0x9000
+  p4[511] = 0x9000 | PTE_P | PTE_W;
+
+  // Entry 0 in PDPT -> maps 0..1GB with 1GB huge page to physical 0x0
+  p3[0] = 0x0 | PTE_P | PTE_W | PTE_PS;
+
+  // Entry 510 in PDPT -> maps 0xffffffff80000000 (KERNBASE) with 1GB huge page to physical 0x0
+  p3[510] = 0x0 | PTE_P | PTE_W | PTE_PS;
+
+  cprintf("SMP: starting %d other CPUs...\n", ncpu - 1);
+  for (c = cpus; c < cpus + ncpu; c++) {
+    if (c == cpus + cpuid())
+      continue;
+
+    // Allocate per-core kernel stack
+    stack = kalloc();
+    if (!stack)
+      panic("startothers: kalloc failed");
+
+    *(uint64_t *)(code - 8) = (uint64_t)(stack + KSTACKSIZE);
+    *(uint64_t *)(code - 16) = (uint64_t)mpenter;
+
+    cprintf("SMP: booting CPU%d (apicid %d)...\n", (int)(c - cpus), c->apicid);
+    lapicstartap(c->apicid, 0x7000);
+
+    // Wait for CPU to finish mpmain() and set started flag
+    while (c->started == 0)
+      ;
+    cprintf("SMP: CPU%d online\n", (int)(c - cpus));
+  }
+}
+

@@ -2,7 +2,7 @@
 #define PRONINX_LWIPOPTS_H
 
 /* A single-core, polling lwIP port. Network input and timers run in kernel
- * interrupt context, so the sequential and BSD socket APIs stay disabled. */
+ * interrupt context, so the sequential and netconn APIs stay disabled. */
 #define NO_SYS 1
 #define SYS_LIGHTWEIGHT_PROT 0
 #define LWIP_TIMERS 1

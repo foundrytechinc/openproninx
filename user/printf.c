@@ -1,22 +1,41 @@
 #include "user.h"
 
-static void printchar(int fd, char c, int *print_cnt) {
-  write(fd, &c, 1);
-  (*print_cnt)++;
+#define PRINTF_BUF_SIZE 512
+
+struct print_buf {
+  int fd;
+  int pos;
+  int print_cnt;
+  char buf[PRINTF_BUF_SIZE];
+};
+
+static void pbuf_flush(struct print_buf *pb) {
+  if (pb->pos > 0) {
+    write(pb->fd, pb->buf, pb->pos);
+    pb->pos = 0;
+  }
 }
 
-static void printint(int fd, long xx, int base, int sign, int *print_cnt) {
-  static char digits[] = "0123456789ABCDEF";
-  char buf[16];
+static inline void printchar(struct print_buf *pb, char c) {
+  pb->buf[pb->pos++] = c;
+  pb->print_cnt++;
+  if (pb->pos >= PRINTF_BUF_SIZE) {
+    pbuf_flush(pb);
+  }
+}
+
+static void printint(struct print_buf *pb, long long xx, int base, int sign) {
+  static char digits[] = "0123456789abcdef";
+  char buf[32];
   int i, neg;
-  unsigned long x;
+  unsigned long long x;
 
   neg = 0;
   if (sign && xx < 0) {
     neg = 1;
-    x = -xx;
+    x = (unsigned long long)-xx;
   } else {
-    x = xx;
+    x = (unsigned long long)xx;
   }
 
   i = 0;
@@ -27,74 +46,182 @@ static void printint(int fd, long xx, int base, int sign, int *print_cnt) {
     buf[i++] = '-';
 
   while (--i >= 0) {
-    printchar(fd, buf[i], print_cnt);
+    printchar(pb, buf[i]);
+  }
+}
+
+/* Print string s with field width |width|.
+ * left_justify=1: pad on the right; 0: pad on the left. */
+static void printstr_width(struct print_buf *pb, const char *s,
+                           int width, int left_justify) {
+  int len = 0;
+  const char *p = s;
+  if (!s) s = "(null)";
+  while (*p++) len++;
+
+  if (!left_justify) {
+    int pad = width - len;
+    while (pad-- > 0) printchar(pb, ' ');
+  }
+  while (*s) printchar(pb, *s++);
+  if (left_justify) {
+    int pad = width - len;
+    while (pad-- > 0) printchar(pb, ' ');
+  }
+}
+
+/* Print integer with field width, right/left-aligned. */
+static void printint_width(struct print_buf *pb, long long v, int base,
+                           int sign, int width, int left_justify,
+                           char pad_char) {
+  char buf[32];
+  int i = 0, neg = 0;
+  unsigned long long x;
+
+  if (sign && v < 0) { neg = 1; x = (unsigned long long)-v; }
+  else                x = (unsigned long long)v;
+
+  do { buf[i++] = "0123456789abcdef"[x % base]; } while ((x /= base) != 0);
+  if (neg) buf[i++] = '-';
+
+  int len = i;
+  if (!left_justify) {
+    int pad = width - len;
+    while (pad-- > 0) printchar(pb, pad_char);
+  }
+  while (--i >= 0) printchar(pb, buf[i]);
+  if (left_justify) {
+    int pad = width - len;
+    while (pad-- > 0) printchar(pb, ' ');
   }
 }
 
 static int do_printf(const char *fmt, int fd, va_list va) {
-  char *s;
-  int c, i, state;
-  int print_cnt = 0;
+  struct print_buf pb;
+  int c, i;
 
-  char *val_s;
-  int val_d;
-  char val_c;
+  pb.fd = fd;
+  pb.pos = 0;
+  pb.print_cnt = 0;
 
-  state = 0;
   for (i = 0; (c = fmt[i] & 0xff) != 0; i++) {
-    if (state == 0) {
-      if (c == '%') {
-        state = '%';
-      } else {
-        printchar(fd, c, &print_cnt);
+    if (c != '%') {
+      printchar(&pb, c);
+      continue;
+    }
+
+    /* Start of format spec */
+    i++;
+    c = fmt[i] & 0xff;
+    if (c == 0) break;
+
+    /* Flags */
+    int left_justify = 0;
+    while (c == '-') {
+      left_justify = 1;
+      i++;
+      c = fmt[i] & 0xff;
+    }
+
+    /* Width: either '*' (from arg) or digits */
+    int width = 0;
+    if (c == '*') {
+      width = va_arg(va, int);
+      if (width < 0) {
+        left_justify = 1;
+        width = -width;
       }
-    } else if (state == '%') {
-      if (c == 'd') {
-        val_d = va_arg(va, int);
-        printint(fd, val_d, 10, 1, &print_cnt);
-      } else if (c == 'x' || c == 'p') {
-        val_d = va_arg(va, int);
-        printint(fd, val_d, 16, 0, &print_cnt);
-      } else if (c == 's') {
-        val_s = va_arg(va, char *);
-        if (val_s == 0) {
-          val_s = "(null)";
-        }
-        while (*val_s != 0) {
-          printchar(fd, *val_s, &print_cnt);
-          val_s++;
-        }
-      } else if (c == 'c') {
-        val_c = (char)va_arg(va, int);
-        printchar(fd, val_c, &print_cnt);
-      } else if (c == '%') {
-        printchar(fd, c, &print_cnt);
-      } else {
-        // Unknown % sequence.  Print it to draw attention.
-        printchar(fd, '%', &print_cnt);
-        printchar(fd, c, &print_cnt);
+      i++;
+      c = fmt[i] & 0xff;
+    } else {
+      while (c >= '0' && c <= '9') {
+        width = width * 10 + (c - '0');
+        i++;
+        c = fmt[i] & 0xff;
       }
-      state = 0;
+    }
+
+    char pad_char = ' ';
+
+    /* Length modifier */
+    int is_long = 0;
+    if (c == 'l') {
+      is_long = 1;
+      i++;
+      c = fmt[i] & 0xff;
+      if (c == 'l') {
+        i++;
+        c = fmt[i] & 0xff;
+      } /* ll */
+    }
+
+    /* Conversion */
+    if (c == 'd' || c == 'i') {
+      long long val = is_long ? va_arg(va, long long) : (long long)va_arg(va, int);
+      if (width > 0)
+        printint_width(&pb, val, 10, 1, width, left_justify, pad_char);
+      else
+        printint(&pb, val, 10, 1);
+    } else if (c == 'u') {
+      unsigned long long val = is_long ? (unsigned long long)va_arg(va, unsigned long long)
+                                       : (unsigned long long)va_arg(va, unsigned int);
+      if (width > 0)
+        printint_width(&pb, (long long)val, 10, 0, width, left_justify, pad_char);
+      else
+        printint(&pb, (long long)val, 10, 0);
+    } else if (c == 'x' || c == 'p') {
+      unsigned long long val = is_long ? (unsigned long long)va_arg(va, unsigned long long)
+                                       : (unsigned long long)(unsigned int)va_arg(va, int);
+      if (width > 0)
+        printint_width(&pb, (long long)val, 16, 0, width, left_justify, pad_char);
+      else
+        printint(&pb, (long long)val, 16, 0);
+    } else if (c == 's') {
+      char *s = va_arg(va, char *);
+      if (!s) s = "(null)";
+      if (width > 0)
+        printstr_width(&pb, s, width, left_justify);
+      else
+        while (*s) printchar(&pb, *s++);
+    } else if (c == 'c') {
+      char ch = (char)va_arg(va, int);
+      printchar(&pb, ch);
+    } else if (c == '%') {
+      printchar(&pb, '%');
+    } else if (c == 0) {
+      break;
+    } else {
+      /* Unknown specifier — print literally */
+      printchar(&pb, '%');
+      if (left_justify) printchar(&pb, '-');
+      printchar(&pb, c);
     }
   }
 
-  return print_cnt;
+  pbuf_flush(&pb);
+  return pb.print_cnt;
 }
 
-// Print to the stdout. Only understands %c, %d, %x, %p, %s.
+// Print to stdout. Supports: %c %d %i %u %x %p %s %lld %lu %*s %-Ns %Nd etc.
 int printf(const char *fmt, ...) {
   va_list va;
   va_start(va, fmt);
-  int res = do_printf(fmt, 0, va);
+  int res = do_printf(fmt, 1, va);
   va_end(va);
   return res;
 }
 
-// Print to the given fd. Only understands %c, %d, %x, %p, %s.
+// Print to the given fd.
 int dprintf(int fd, const char *fmt, ...) {
   va_list va;
   va_start(va, fmt);
   int res = do_printf(fmt, fd, va);
   va_end(va);
   return res;
+}
+
+int putchar(int c) {
+  char ch = (char)c;
+  write(1, &ch, 1);
+  return (uchar)ch;
 }

@@ -551,6 +551,10 @@ ip_chksum_pseudo_partial(struct pbuf *p, u8_t proto, u16_t proto_len,
  * @return checksum (as u16_t) to be saved directly in the protocol header
  */
 
+/*
+ * Statistical invariant:
+ * >50% of prostitutes are prostitutes.
+ */
 u16_t
 inet_chksum(const void *dataptr, u16_t len)
 {

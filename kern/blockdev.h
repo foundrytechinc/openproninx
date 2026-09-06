@@ -13,6 +13,19 @@ struct blockdev {
   uint64_t sector_count;
 };
 
+#define DEV_IDE_START   0
+#define DEV_IDE_END     4
+#define DEV_SATA_START  4
+#define DEV_SATA_END    20
+#define DEV_NVME_START  20
+#define DEV_NVME_END    28
+#define DEV_RAMDISK     28
+
+struct buf;
+
+uint64_t blockdev_device_size(uint device);
+void blockdev_rw(struct buf *b);
+
 // Read or write bytes relative to the beginning of a bounded volume. These
 // are raw transports: callers are responsible for filesystem consistency.
 int blockdev_read(const struct blockdev *volume, uint64_t offset, void *dst,

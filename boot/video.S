@@ -11,25 +11,30 @@
 .code16
 .globl vbe_setup
 vbe_setup:
+  # VBE disabled: remain in standard VGA 80x25 text mode
   pushw %ds
   pushw %es
   pusha
 
   xorw %ax, %ax
   movw %ax, %ds
-  # Do not let framebuffer data left by a warm reboot look valid when VBE
-  # probing or mode setup fails.
   movl %eax, BOOT_FRAMEBUFFER_INFO_PHYS
-  movl $0x32454256, 0x500       # "VBE2": request the extended info block
-  xorw %ax, %ax
-  movw %ax, %es
-  movw $0x4f00, %ax
-  movw $0x500, %di
+
+  # Retrieve standard 8x16 VGA font from BIOS ROM
+  movw $0x1130, %ax
+  movb $0x06, %bh
   int $0x10
-  cmpw $0x004f, %ax
-  je vbe_info_ok
-  movl $0x46423030, BOOT_FRAMEBUFFER_INFO_PHYS # "FB00": VBE info failed
-  jmp vbe_done
+  movw %es, %ax
+  movzwl %ax, %eax
+  shll $4, %eax
+  movzwl %bp, %edx
+  addl %edx, %eax
+  movl %eax, BOOT_FRAMEBUFFER_INFO_PHYS + 16
+
+  popa
+  popw %es
+  popw %ds
+  ret
 
 vbe_info_ok:
 
@@ -99,6 +104,11 @@ vbe_bpp_supported:
   movzwl %ax, %eax
   movzwl %cx, %ecx
   imull %ecx, %eax
+  cmpb $32, 0x719
+  jne vbe_calc_score
+  # If 32 bpp, set high bit so 32-bit direct color modes always take priority
+  orl $0x40000000, %eax
+vbe_calc_score:
   cmpl 0x8f2, %eax
   jbe vbe_next_mode
   movl %eax, 0x8f2

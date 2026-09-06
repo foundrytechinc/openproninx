@@ -111,6 +111,7 @@ $(OBJDIR)/third_party/lwip/src/%.o: third_party/lwip/src/%.c
 $(OBJDIR)/$(KERN_DIR)/mkfs: $(KERN_DIR)/mkfs.c
 	$(CC) -std=c11 -Wall -Wextra -Wno-format -Wno-unused -Wno-address-of-packed-member -Werror -I. \
 		-o $@ $<
+	chmod +x $@
 
 $(FS_IMG): $(OBJDIR)/$(KERN_DIR)/mkfs $(UOBJS)
 	./$< $@ $(UOBJS)

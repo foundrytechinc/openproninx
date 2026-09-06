@@ -112,9 +112,11 @@ void ideinit(void) {
   ioapicenable(IRQ_IDE_SECONDARY, ncpu - 1);
   for (device = 0; device < IDE_DEVICES; device++)
     disk_sectors[device] = ideidentify(device);
-  cprintf("IDE: primary %d/%d sectors, secondary %d/%d sectors\n",
-          (uint)disk_sectors[0], (uint)disk_sectors[1],
-          (uint)disk_sectors[2], (uint)disk_sectors[3]);
+  if (disk_sectors[1] > 0 || disk_sectors[2] > 0 || disk_sectors[3] > 0) {
+    cprintf("IDE: primary %d/%d sectors, secondary %d/%d sectors\n",
+            (uint)disk_sectors[0], (uint)disk_sectors[1],
+            (uint)disk_sectors[2], (uint)disk_sectors[3]);
+  }
 }
 
 static void idestart(struct idechannel *channel, struct buf *buffer) {
