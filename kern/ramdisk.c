@@ -3,32 +3,33 @@
 #include "buf.h"
 #include "defs.h"
 #include "fs.h"
-
-extern char ramdisk_blob_start[];
-extern char ramdisk_blob_end[];
+#include "inc/bootinfo.h"
+#include "memlayout.h"
 
 static char *ramdisk_data;
 static uint64_t ramdisk_sectors;
 
 void ramdisk_init(void) {
-  uintptr_t start = (uintptr_t)ramdisk_blob_start;
-  uintptr_t end = (uintptr_t)ramdisk_blob_end;
+  const struct fnu_bootinfo *bi = bootinfo();
+  uint i;
 
-  if (end > start) {
-    uint64_t bytes = end - start;
-    ramdisk_sectors = bytes / FNU_BLOCKDEV_SECTOR_SIZE;
-    ramdisk_data = ramdisk_blob_start;
-    cprintf("RAMDISK: embedded rootfs image ready (%d sectors, %d KB)\n",
-            (uint)ramdisk_sectors, (uint)(bytes / 1024));
-  } else {
-    ramdisk_sectors = 0;
-    ramdisk_data = 0;
+  if (bi == 0)
+    return;
+  for (i = 0; i < bi->modules; i++) {
+    if (strncmp(bi->module[i].name, "ramdisk", FNU_MODULE_NAME) != 0)
+      continue;
+    if (bi->module[i].size < FNU_BLOCKDEV_SECTOR_SIZE)
+      break;
+    ramdisk_data = (char *)P2V((uintptr_t)bi->module[i].base);
+    ramdisk_sectors = bi->module[i].size / FNU_BLOCKDEV_SECTOR_SIZE;
+    cprintf("RAMDISK: rootfs from loader (%u sectors, %u KB)\n",
+            (uint)ramdisk_sectors, (uint)(bi->module[i].size / 1024));
+    return;
   }
+  cprintf("RAMDISK: loader supplied no rootfs\n");
 }
 
-uint64_t ramdisk_size(void) {
-  return ramdisk_sectors;
-}
+uint64_t ramdisk_size(void) { return ramdisk_sectors; }
 
 int ramdisk_available(void) {
   return (ramdisk_sectors > 0 && ramdisk_data != 0);

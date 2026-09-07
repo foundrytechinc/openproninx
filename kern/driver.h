@@ -36,6 +36,7 @@ struct driver {
   int (*detach)(struct device *dev);
   void (*intr)(struct device *dev);
   void (*poll)(struct device *dev);
+  void (*shutdown)(struct device *dev);
 };
 
 struct device {
@@ -47,8 +48,8 @@ struct device {
   struct pci_device pci;
   int irq;
   void *mmio_vaddr;
-  uint32_t mmio_paddr;
-  uint32_t mmio_size;
+  uint64_t mmio_paddr;
+  uint64_t mmio_size;
   uint16_t io_base;
   int active;
 };
@@ -58,6 +59,7 @@ int driver_register(struct driver *drv);
 int driver_attach_pci_devices(void);
 int driver_dispatch_irq(int irq);
 void driver_poll_all(void);
+int driver_device_count(void);
 struct device *driver_find_device(const char *name);
 struct device *driver_find_device_by_type(enum device_type type);
 

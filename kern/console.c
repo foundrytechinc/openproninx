@@ -1,13 +1,14 @@
 #include "defs.h"
 #include "file.h"
 #include "inc/abi.h"
+#include "inc/signal.h"
+#include "kbd.h"
 #include "inc/stdarg.h"
 #include "memlayout.h"
 #include "proc.h"
 #include "spinlock.h"
 #include "trap.h"
 #include "x86.h"
-
 
 static struct termios term = {.c_lflag = ICANON | ECHO};
 
@@ -44,16 +45,11 @@ static void printint(long xx, int base, int sign) {
     consputc_raw(buf[i]);
 }
 
-// Print to the console. only understands %c, %d, %x, %p, %s.
+// Print to the console. %c %d %u %x %p %s, and an l prefix for 64 bit.
 void cprintf(char *fmt, ...) {
-  int i, c, locking;
-  void **argp;
-  char *s;
+  int i, c, locking, lng;
 
   va_list va;
-  char val_c;
-  int val_d;
-  long val_l;
   char *val_s;
 
   locking = cons.locking;
@@ -73,27 +69,26 @@ void cprintf(char *fmt, ...) {
       continue;
     }
     c = fmt[++i] & 0xff;
+    lng = 0;
+    if (c == 'l') {
+      lng = 1;
+      c = fmt[++i] & 0xff;
+    }
     if (c == 0)
       break;
     switch (c) {
     case 'c':
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wpointer-to-int-cast"
-      val_c = (char)va_arg(va, int);
-      consputc_raw(val_c);
-#pragma GCC diagnostic pop
+      consputc_raw((char)va_arg(va, int));
       break;
     case 'd':
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wpointer-to-int-cast"
-      val_d = va_arg(va, int);
-      printint((long)val_d, 10, 1);
-#pragma GCC diagnostic pop
+      printint(lng ? va_arg(va, long) : (long)va_arg(va, int), 10, 1);
+      break;
+    case 'u':
+      printint(lng ? (long)va_arg(va, ulong) : (long)va_arg(va, uint), 10, 0);
       break;
     case 'x':
     case 'p':
-      val_l = va_arg(va, long);
-      printint(val_l, 16, 0);
+      printint(va_arg(va, long), 16, 0);
       break;
     case 's':
       val_s = va_arg(va, char *);
@@ -108,7 +103,7 @@ void cprintf(char *fmt, ...) {
       consputc_raw('%');
       break;
     default:
-      // Print unknown % sequence to draw attention.
+      // unknown % sequence, printed to draw attention
       consputc_raw('%');
       consputc_raw(c);
       break;
@@ -138,64 +133,66 @@ void panic(char *s) {
 
 #define BACKSPACE 0x100
 #define CRTPORT 0x3d4
-/*
- * VGA text memory cannot be read back while VBE graphics mode is active:
- * QEMU returns 0xffff for its cells, which turns every framebuffer glyph
- * into a solid white block.  Keep a RAM shadow for the framebuffer console;
- * retain the hardware text buffer when VBE is unavailable.
- */
+// vga text memory cannot be read back in vbe graphics mode; qemu answers
+// 0xffff. the framebuffer console keeps a ram shadow instead.
 #define VGA_COLUMNS 80
 #define VGA_ROWS 25
-#define FB_MAX_COLUMNS 320
-#define FB_MAX_ROWS 100
 
-static ushort crt_shadow[FB_MAX_COLUMNS * FB_MAX_ROWS];
-static ushort *crt = (ushort *)P2V(0xb8000); // CGA memory or RAM shadow
+#define NVT KBD_VT_MAX
+#define INPUT_BUF 128
+
+// one virtual terminal: its own screen, cursor, escape state and input.
+// the cell buffer follows the console geometry, as FreeBSD's vt_buf does.
+struct vt {
+  ushort *cells;
+  int pos;
+  int pending_scrolls;
+  int ansi_state;
+  int ansi_params[8];
+  int ansi_nparams;
+  ushort attr;
+  uint32_t utf8_codepoint;
+  int utf8_expected;
+  pid_t fgpid;
+  struct {
+    char buf[INPUT_BUF];
+    uint r, w, e;
+  } in;
+};
+
+static struct vt vts[NVT];
+static int active;
 static int console_columns = VGA_COLUMNS;
 static int console_rows = VGA_ROWS;
-/*
- * The VGA CRTC cursor belongs to the legacy text-mode display.  Once VBE is
- * active, its value is a BIOS leftover and must not determine where the
- * framebuffer console starts drawing.
- */
-static int console_pos;
-static int console_pending_scrolls = 0;
 
-// ANSI escape sequence state
-static int ansi_state = 0;
-static int ansi_params[8];
-static int ansi_nparams = 0;
-static ushort ansi_attr = 0x0700; // Default: grey on black
+// the text adapter shows one screen, so an inactive terminal lives in ram only
+static ushort *vga = (ushort *)P2V(0xb8000);
 
-
-static uint32_t utf8_codepoint = 0;
-static int utf8_expected = 0;
-
-static int decode_utf8(uchar b) {
-  if (utf8_expected == 0) {
+static int decode_utf8(struct vt *v, uchar b) {
+  if (v->utf8_expected == 0) {
     if ((b & 0x80) == 0) {
       return b;
     } else if ((b & 0xE0) == 0xC0) {
-      utf8_codepoint = b & 0x1F;
-      utf8_expected = 1;
+      v->utf8_codepoint = b & 0x1F;
+      v->utf8_expected = 1;
       return -1;
     } else if ((b & 0xF0) == 0xE0) {
-      utf8_codepoint = b & 0x0F;
-      utf8_expected = 2;
+      v->utf8_codepoint = b & 0x0F;
+      v->utf8_expected = 2;
       return -1;
     } else if ((b & 0xF8) == 0xF0) {
-      utf8_codepoint = b & 0x07;
-      utf8_expected = 3;
+      v->utf8_codepoint = b & 0x07;
+      v->utf8_expected = 3;
       return -1;
     } else {
       return '?';
     }
   } else {
     if ((b & 0xC0) == 0x80) {
-      utf8_codepoint = (utf8_codepoint << 6) | (b & 0x3F);
-      utf8_expected--;
-      if (utf8_expected == 0) {
-        uint32_t cp = utf8_codepoint;
+      v->utf8_codepoint = (v->utf8_codepoint << 6) | (b & 0x3F);
+      v->utf8_expected--;
+      if (v->utf8_expected == 0) {
+        uint32_t cp = v->utf8_codepoint;
         if (cp == 0x2014 || cp == 0x2013 || cp == 0x2015 || cp == 0x2212)
           return '-';
         if (cp == 0x2018 || cp == 0x2019)
@@ -214,101 +211,105 @@ static int decode_utf8(uchar b) {
       }
       return -1;
     } else {
-      utf8_expected = 0;
+      v->utf8_expected = 0;
       return '?';
     }
   }
 }
 
-static void cgaputc(int c) {
+static void cgaputc(struct vt *v, int c) {
   int pos;
 
+  // kernel messages start before consoleinit; the serial line already has them
+  if (v->cells == 0)
+    return;
+
   if (c != BACKSPACE && (c & ~0xff) == 0) {
-    c = decode_utf8((uchar)c);
+    c = decode_utf8(v, (uchar)c);
     if (c < 0)
       return;
   }
 
   // Cursor position: col + console_columns*row.
-  if (framebuffer_available()) {
-    pos = console_pos;
-  } else {
-    outb(CRTPORT, 14);
-    pos = inb(CRTPORT + 1) << 8;
-    outb(CRTPORT, 15);
-    pos |= inb(CRTPORT + 1);
-  }
+  pos = v->pos;
 
-  if (ansi_state == 0) {
+  if (v->ansi_state == 0) {
     if (c == 0x1b) { // ESC
-      ansi_state = 1;
+      v->ansi_state = 1;
       return;
     }
-  } else if (ansi_state == 1) {
+  } else if (v->ansi_state == 1) {
     if (c == '[') {
-      ansi_state = 2;
-      ansi_nparams = 0;
-      memset(ansi_params, 0, sizeof(ansi_params));
+      v->ansi_state = 2;
+      v->ansi_nparams = 0;
+      memset(v->ansi_params, 0, sizeof(v->ansi_params));
       return;
     } else {
-      ansi_state = 0;
+      v->ansi_state = 0;
     }
-  } else if (ansi_state == 2) {
+  } else if (v->ansi_state == 2) {
     if (c >= '0' && c <= '9') {
-      ansi_params[ansi_nparams] = ansi_params[ansi_nparams] * 10 + (c - '0');
+      v->ansi_params[v->ansi_nparams] =
+          v->ansi_params[v->ansi_nparams] * 10 + (c - '0');
       return;
     } else if (c == ';') {
-      if (ansi_nparams < 7)
-        ansi_nparams++;
+      if (v->ansi_nparams < 7)
+        v->ansi_nparams++;
       return;
     } else {
-      ansi_nparams++; // Count the last parameter
+      v->ansi_nparams++; // Count the last parameter
       if (c == 'm') { // SGR - Select Graphic Rendition
-        for (int i = 0; i < ansi_nparams; i++) {
-          int p = ansi_params[i];
+        for (int i = 0; i < v->ansi_nparams; i++) {
+          int p = v->ansi_params[i];
           if (p == 0) {
-            ansi_attr = 0x0700; // Reset
+            v->attr = 0x0700; // Reset
           } else if (p == 7) {
-            ansi_attr = 0x7000; // Inverse video (black on grey)
+            v->attr = 0x7000; // Inverse video (black on grey)
           } else if (p >= 30 && p <= 37) {
             // Foreground color
             static uchar ansi_to_vga[] = {0, 4, 2, 6, 1, 5, 3, 7};
-            ansi_attr = (ansi_attr & 0xf000) | (ansi_to_vga[p - 30] << 8) | 0x0800; // Bold-ish
+            v->attr = (v->attr & 0xf000) | (ansi_to_vga[p - 30] << 8) |
+                      0x0800; // bold-ish
           }
         }
       } else if (c == 'J') { // ED - Erase in Display
-        if (ansi_params[0] == 2) {
+        if (v->ansi_params[0] == 2) {
           // Clear entire screen
           for (int i = 0; i < console_columns * console_rows; i++)
-            crt[i] = ' ' | ansi_attr;
+            v->cells[i] = ' ' | v->attr;
           pos = 0;
-          console_pending_scrolls = 0;
+          v->pending_scrolls = 0;
           if (framebuffer_available())
             framebuffer_clear();
         }
       } else if (c == 'H' || c == 'f') { // CUP or HVP - Cursor Position
-        int row = ansi_params[0] ? ansi_params[0] - 1 : 0;
-        int col = ansi_params[1] ? ansi_params[1] - 1 : 0;
-        if (row < 0) row = 0;
-        if (row >= console_rows) row = console_rows - 1;
-        if (col < 0) col = 0;
-        if (col >= console_columns) col = console_columns - 1;
+        int row = v->ansi_params[0] ? v->ansi_params[0] - 1 : 0;
+        int col = v->ansi_params[1] ? v->ansi_params[1] - 1 : 0;
+        if (row < 0)
+          row = 0;
+        if (row >= console_rows)
+          row = console_rows - 1;
+        if (col < 0)
+          col = 0;
+        if (col >= console_columns)
+          col = console_columns - 1;
         pos = row * console_columns + col;
       } else if (c == 'K') { // EL - Erase in Line
-        int mode = ansi_params[0];
+        int mode = v->ansi_params[0];
         if (mode == 0) { // Erase from cursor to end of line
-          for (int i = pos; i < (pos / console_columns + 1) * console_columns; i++)
-            crt[i] = ' ' | ansi_attr;
+          for (int i = pos; i < (pos / console_columns + 1) * console_columns;
+               i++)
+            v->cells[i] = ' ' | v->attr;
         } else if (mode == 1) { // Erase from start of line to cursor
           for (int i = (pos / console_columns) * console_columns; i <= pos; i++)
-            crt[i] = ' ' | ansi_attr;
+            v->cells[i] = ' ' | v->attr;
         } else if (mode == 2) { // Erase entire line
           for (int i = (pos / console_columns) * console_columns;
                i < (pos / console_columns + 1) * console_columns; i++)
-            crt[i] = ' ' | ansi_attr;
+            v->cells[i] = ' ' | v->attr;
         }
       }
-      ansi_state = 0;
+      v->ansi_state = 0;
       goto update_cursor;
     }
   }
@@ -320,14 +321,14 @@ static void cgaputc(int c) {
   } else if (c == BACKSPACE) {
     if (pos > 0) {
       --pos;
-      crt[pos] = ' ' | ansi_attr;
+      v->cells[pos] = ' ' | v->attr;
     }
   } else if (c == '\b') {
     if (pos > 0) {
       --pos;
     }
   } else if (c >= ' ') {
-    crt[pos++] = (c & 0xff) | ansi_attr;
+    v->cells[pos++] = (c & 0xff) | v->attr;
   }
 
   if (pos < 0 || pos > console_rows * console_columns) {
@@ -335,21 +336,17 @@ static void cgaputc(int c) {
   }
 
   if ((pos / console_columns) >= console_rows) { // Scroll up.
-    memmove(crt, crt + console_columns,
-            sizeof(crt[0]) * (console_rows - 1) * console_columns);
+    memmove(v->cells, v->cells + console_columns,
+            sizeof(v->cells[0]) * (console_rows - 1) * console_columns);
     pos -= console_columns;
-    memset(crt + pos, 0,
-           sizeof(crt[0]) * (console_rows * console_columns - pos));
-    // Fill with current attribute
     for (int i = pos; i < console_rows * console_columns; i++)
-      crt[i] = ' ' | ansi_attr;
-    console_pending_scrolls++;
+      v->cells[i] = ' ' | v->attr;
+    v->pending_scrolls++;
   }
 
 update_cursor:
-  if (framebuffer_available()) {
-    console_pos = pos;
-  } else {
+  v->pos = pos;
+  if (!framebuffer_available() && v == &vts[active]) {
     outb(CRTPORT, 14);
     outb(CRTPORT + 1, pos >> 8);
     outb(CRTPORT, 15);
@@ -357,37 +354,52 @@ update_cursor:
   }
 }
 
-static void consputc_raw(int c) {
+static void vtputc(struct vt *v, int c) {
   if (panicked) {
     cli();
     for (;;)
       ;
   }
 
-  if (c == BACKSPACE) {
-    uartputc('\b');
-    uartputc(' ');
-    uartputc('\b');
-  } else {
-    uartputc(c);
+  // the serial line mirrors whatever the user is looking at
+  if (v == &vts[active]) {
+    if (c == BACKSPACE) {
+      uartputc('\b');
+      uartputc(' ');
+      uartputc('\b');
+    } else {
+      uartputc(c);
+    }
   }
-  cgaputc(c);
+  cgaputc(v, c);
 }
+
+// kernel messages land on the terminal in front of the user
+static void consputc_raw(int c) { vtputc(&vts[active], c); }
 
 static int console_dirty = 0;
 static uint console_burst_start = 0;
 
-void console_flush(void) {
+// a parked processor never releases the console
+void console_drop_lock(void) { cons.locking = 0; }
+
+static void vt_flush(struct vt *v) {
+  if (v != &vts[active] || v->cells == 0)
+    return;
   if (framebuffer_available()) {
-    if (console_pending_scrolls > 0) {
-      framebuffer_scroll_lines(console_pending_scrolls, ' ' | ansi_attr);
-      console_pending_scrolls = 0;
+    if (v->pending_scrolls > 0) {
+      framebuffer_scroll_lines(v->pending_scrolls, ' ' | v->attr);
+      v->pending_scrolls = 0;
     }
-    framebuffer_flush_cells(crt, console_columns * console_rows);
+    framebuffer_flush_cells(v->cells, console_columns * console_rows);
+  } else {
+    memmove(vga, v->cells, sizeof(ushort) * console_columns * console_rows);
   }
   console_dirty = 0;
   console_burst_start = ticks;
 }
+
+void console_flush(void) { vt_flush(&vts[active]); }
 
 void console_flush_if_dirty(void) {
   if (!console_dirty || cons.lock.locked)
@@ -404,38 +416,52 @@ void consputc(int c) {
   console_flush();
 }
 
-#define INPUT_BUF 128
-
-struct {
-  char buf[INPUT_BUF];
-  uint r; // Read index
-  uint w; // Write index
-  uint e; // Edit index
-} input;
-static pid_t foreground_pid;
-
-#define C(x) ((x) - '@') // Control-x
-
-void console_set_foreground(pid_t pid) {
+void console_set_foreground(int tty, pid_t pid) {
   acquire(&cons.lock);
-  foreground_pid = pid;
+  vts[tty >= 0 && tty < NVT ? tty : active].fgpid = pid;
   release(&cons.lock);
 }
 
+// repaint the whole screen from the terminal being switched to
+static void vt_switch(int n) {
+  struct vt *v;
+
+  if (n < 0 || n >= NVT || n == active || vts[n].cells == 0)
+    return;
+  active = n;
+  v = &vts[active];
+  v->pending_scrolls = 0;
+  if (framebuffer_available()) {
+    framebuffer_redraw_cells(v->cells, console_columns * console_rows);
+  } else {
+    memmove(vga, v->cells, sizeof(ushort) * console_columns * console_rows);
+    outb(CRTPORT, 14);
+    outb(CRTPORT + 1, v->pos >> 8);
+    outb(CRTPORT, 15);
+    outb(CRTPORT + 1, v->pos);
+  }
+}
+
 void consoleintr(int (*getc)(void)) {
+  struct vt *v;
   int c, doprocdump = 0;
 
   acquire(&cons.lock);
   while ((c = getc()) >= 0) {
+    if (c >= KBD_VT_BASE && c < KBD_VT_BASE + NVT) {
+      vt_switch(c - KBD_VT_BASE);
+      continue;
+    }
+    v = &vts[active];
     if (!(term.c_lflag & ICANON)) {
-      if (c != 0 && input.e - input.r < INPUT_BUF) {
-        input.buf[input.e++ % INPUT_BUF] = c;
+      if (c != 0 && v->in.e - v->in.r < INPUT_BUF) {
+        v->in.buf[v->in.e++ % INPUT_BUF] = c;
         if (term.c_lflag & ECHO)
-          consputc_raw(c);
+          vtputc(v, c);
         else if (term.c_lflag & ECHOPASS)
-          consputc_raw('*');
-        input.w = input.e;
-        wakeup(&input.r);
+          vtputc(v, '*');
+        v->in.w = v->in.e;
+        wakeup(&v->in.r);
       }
       continue;
     }
@@ -446,56 +472,63 @@ void consoleintr(int (*getc)(void)) {
       doprocdump = 1;
       break;
     case C('U'): // Kill line.
-      while (input.e != input.w &&
-             input.buf[(input.e - 1) % INPUT_BUF] != '\n') {
-        input.e--;
-        consputc_raw(BACKSPACE);
+      while (v->in.e != v->in.w &&
+             v->in.buf[(v->in.e - 1) % INPUT_BUF] != '\n') {
+        v->in.e--;
+        vtputc(v, BACKSPACE);
       }
       break;
     case C('C'):
-      while (input.e != input.w &&
-             input.buf[(input.e - 1) % INPUT_BUF] != '\n') {
-        input.e--;
-        consputc_raw(BACKSPACE);
+      while (v->in.e != v->in.w &&
+             v->in.buf[(v->in.e - 1) % INPUT_BUF] != '\n') {
+        v->in.e--;
+        vtputc(v, BACKSPACE);
       }
-      consputc_raw('^');
-      consputc_raw('C');
-      consputc_raw('\n');
-      if (foreground_pid > 0)
-        kill(foreground_pid);
-      wakeup(&input.r);
+      vtputc(v, '^');
+      vtputc(v, 'C');
+      vtputc(v, '\n');
+      if (v->fgpid > 0)
+        kill(v->fgpid, SIGINT);
+      wakeup(&v->in.r);
       break;
     case C('H'):
     case '\x7f': // Backspace
-      if (input.e != input.w) {
-        input.e--;
-        consputc_raw(BACKSPACE);
+      if (v->in.e != v->in.w) {
+        v->in.e--;
+        vtputc(v, BACKSPACE);
       }
       break;
     default:
-      if (c != 0 && input.e - input.r < INPUT_BUF) {
+      if (c != 0 && v->in.e - v->in.r < INPUT_BUF) {
         c = (c == '\r') ? '\n' : c;
-        input.buf[input.e++ % INPUT_BUF] = c;
+        v->in.buf[v->in.e++ % INPUT_BUF] = c;
         if (term.c_lflag & ECHOPASS && c != '\n')
-          consputc_raw('*');
+          vtputc(v, '*');
         else if (term.c_lflag & ECHO || c == '\n')
-          consputc_raw(c);
-        if (c == '\n' || c == C('D') || input.e == input.r + INPUT_BUF) {
-          input.w = input.e;
-          wakeup(&input.r);
+          vtputc(v, c);
+        if (c == '\n' || c == C('D') || v->in.e == v->in.r + INPUT_BUF) {
+          v->in.w = v->in.e;
+          wakeup(&v->in.r);
         }
       }
       break;
     }
   }
-  console_flush();
+  vt_flush(&vts[active]);
   release(&cons.lock);
   if (doprocdump) {
     procdump(); // now call procdump() wo. cons.lock held
   }
 }
 
+// minor 0..NVT-1 is /dev/ttyN; anything else is /dev/console, the terminal
+// the user is actually looking at
+static struct vt *vt_of(struct inode *ip) {
+  return (ip->minor >= 0 && ip->minor < NVT) ? &vts[ip->minor] : &vts[active];
+}
+
 int consoleread(struct inode *ip, char *dst, int n) {
+  struct vt *v = vt_of(ip);
   int target;
   int c;
 
@@ -503,24 +536,24 @@ int consoleread(struct inode *ip, char *dst, int n) {
   target = n;
   acquire(&cons.lock);
   if (console_dirty) {
-    console_flush();
+    vt_flush(v);
   }
   while (n > 0) {
-    while (input.r == input.w) {
-      if (myproc()->killed) {
+    while (v->in.r == v->in.w) {
+      if (proc_interrupted()) {
         release(&cons.lock);
         ilock(ip);
         return -1;
       }
-      sleep(&input.r, &cons.lock);
+      sleep(&v->in.r, &cons.lock);
     }
-    c = input.buf[input.r++ % INPUT_BUF];
+    c = v->in.buf[v->in.r++ % INPUT_BUF];
     if (term.c_lflag & ICANON) {
       if (c == C('D')) { // EOF
         if (n < target) {
           // Save ^D for next time, to make sure
           // caller gets a 0-byte result.
-          input.r--;
+          v->in.r--;
         }
         break;
       }
@@ -566,39 +599,74 @@ int consoleioctl(struct inode *ip, uint64_t cmd, uint64_t arg) {
       return -1;
     return display_set_resolution(vinfo.xres, vinfo.yres);
   }
+  case FBIODUMPMODES:
+    display_dump_modes();
+    return 0;
+  case FBIOGET_MODELIST: {
+    static struct fb_modelist list;
+    int n;
+    // display_mode_list talks to the video bios and takes no console lock
+    n = display_mode_list(&list);
+    if (n < 0)
+      return -1;
+    if (copyout(curproc->pgdir, (uintptr_t)arg, &list, sizeof(list)) < 0)
+      return -1;
+    return n;
+  }
   default:
     return -1;
   }
 }
 
 int consolewrite(struct inode *ip, char *buf, int n) {
+  struct vt *v = vt_of(ip);
   int i;
 
   iunlock(ip);
   acquire(&cons.lock);
   for (i = 0; i < n; i++)
-    consputc_raw(buf[i] & 0xff);
+    vtputc(v, buf[i] & 0xff);
 
-  console_flush();
+  vt_flush(v);
   release(&cons.lock);
   ilock(ip);
 
   return n;
 }
 
+// resize every terminal to the geometry now in force and blank it
+static int vt_reset_all(void) {
+  uint64_t bytes = (uint64_t)console_columns * console_rows * sizeof(ushort);
+  int n, i;
+
+  for (n = 0; n < NVT; n++) {
+    struct vt *v = &vts[n];
+    if (v->cells != 0)
+      vmem_free(v->cells);
+    v->cells = vmem_alloc(bytes);
+    if (v->cells == 0)
+      return -1;
+    v->attr = 0x0700;
+    v->pos = 0;
+    v->pending_scrolls = 0;
+    v->ansi_state = 0;
+    v->utf8_expected = 0;
+    for (i = 0; i < console_columns * console_rows; i++)
+      v->cells[i] = ' ' | v->attr;
+  }
+  return 0;
+}
+
 void consoleinit(void) {
   initlock(&cons.lock, "console");
   if (framebuffer_available()) {
-    crt = crt_shadow;
     console_columns = framebuffer_columns();
     console_rows = framebuffer_rows();
-    console_pos = 0;
-    if (console_columns > FB_MAX_COLUMNS || console_rows > FB_MAX_ROWS)
-      panic("framebuffer console too large");
-    for (int i = 0; i < console_columns * console_rows; i++)
-      crt[i] = ' ' | ansi_attr;
-    framebuffer_redraw_cells(crt, console_columns * console_rows);
   }
+  if (vt_reset_all() < 0)
+    panic("console: no memory for terminals");
+  if (framebuffer_available())
+    framebuffer_redraw_cells(vts[active].cells, console_columns * console_rows);
 
   devsw[CONSOLE].write = consolewrite;
   devsw[CONSOLE].read = consoleread;
@@ -610,17 +678,12 @@ void consoleinit(void) {
 void console_switch_to_gpu(void) {
   acquire(&cons.lock);
   if (framebuffer_available()) {
-    crt = crt_shadow;
     console_columns = framebuffer_columns();
     console_rows = framebuffer_rows();
-    console_pos = 0;
-    console_pending_scrolls = 0;
     console_dirty = 0;
-    if (console_columns > FB_MAX_COLUMNS || console_rows > FB_MAX_ROWS)
-      panic("framebuffer console too large");
-    for (int i = 0; i < console_columns * console_rows; i++)
-      crt[i] = ' ' | ansi_attr;
-    framebuffer_redraw_cells(crt, console_columns * console_rows);
+    if (vt_reset_all() == 0)
+      framebuffer_redraw_cells(vts[active].cells,
+                               console_columns * console_rows);
   }
   release(&cons.lock);
 }

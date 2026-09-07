@@ -735,6 +735,26 @@ int sys_chdir(void) {
   return 0;
 }
 
+int64_t sys_getcwd(void) {
+  char path[MAXPATHLEN];
+  char *buf;
+  int size;
+
+  if (argptr(0, &buf, 1) < 0 || argint(1, &size) < 0 || size < 2)
+    return -1;
+  if (size > MAXPATHLEN)
+    size = MAXPATHLEN;
+  begin_op();
+  if (inode_path(myproc()->cwd, path, (uint)size) < 0) {
+    end_op();
+    return -1;
+  }
+  end_op();
+  if (copyout(myproc()->pgdir, (uintptr_t)buf, path, strlen(path) + 1) < 0)
+    return -1;
+  return 0;
+}
+
 int64_t sys_chmod(void) {
   char *path; int mode; struct inode *ip;
   if (argstr(0, &path) < 0 || argint(1, &mode) < 0 || (mode & ~07777)) return -1;

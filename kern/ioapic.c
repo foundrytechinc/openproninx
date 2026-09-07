@@ -50,8 +50,8 @@ void ioapicinit(void) {
     cprintf("ioapicinit: id isn't equal to ioapicid; not a MP\n");
   }
 
-  cprintf("maxintr: %d (this should be smaller than IRQ_SPURIOUS...?\n",
-          maxintr);
+  cprintf("IOAPIC: maxintr %d (must be below IRQ_SPURIOUS %d)\n", maxintr,
+          IRQ_SPURIOUS);
 
   // Mark all interrupts edge-triggered, active high, disabled,
   // and not routed to any CPUs.

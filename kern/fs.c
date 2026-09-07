@@ -22,6 +22,8 @@ uint fat32_root_cluster(void);
 #define DEVFS_FNU_COMMAND_INO 2
 #define DEVFS_FNU_SERVICES_INO 3
 #define DEVFS_FNU_HEALTH_INO 4
+#define DEVFS_TTY_INO 8            /* 8..11 are /dev/tty1../dev/tty4 */
+#define DEVFS_TTY_COUNT 4
 
 static void itrunc(struct inode *);
 
@@ -307,6 +309,9 @@ struct inode *iget(uint dev, uint inum) {
   ip->inum = inum;
   ip->ref = 1;
   ip->valid = 0;
+  // a recycled slot still carries the last tenant's filesystem. leaving it
+  // makes iupdate() drop writes on the floor and directories lose their dots
+  ip->fs_type = FS_NATIVE;
   release(&icache.lock);
 
   return ip;
@@ -344,7 +349,18 @@ void ilock(struct inode *ip) {
     if (ip->dev == DEVFS_DEVICE && ip->inum == DEVFS_CONSOLE_INO) {
       ip->type = T_DEVICE;
       ip->major = CONSOLE;
-      ip->minor = 0;
+      ip->minor = -1;   // /dev/console follows whichever terminal is in front
+      ip->nlink = 1;
+      ip->size = 0;
+      ip->fs_type = FS_DEVFS;
+      ip->valid = 1;
+      return;
+    }
+    if (ip->dev == DEVFS_DEVICE && ip->inum >= DEVFS_TTY_INO &&
+        ip->inum < DEVFS_TTY_INO + DEVFS_TTY_COUNT) {
+      ip->type = T_DEVICE;
+      ip->major = CONSOLE;
+      ip->minor = (short)(ip->inum - DEVFS_TTY_INO);
       ip->nlink = 1;
       ip->size = 0;
       ip->fs_type = FS_DEVFS;
@@ -397,6 +413,7 @@ void ilock(struct inode *ip) {
     ip->mode = dip->mode;
     memmove(ip->addrs, dip->addrs, sizeof(ip->addrs));
     brelse(bp);
+    ip->fs_type = FS_NATIVE;
     ip->valid = 1;
     if (ip->type == 0) {
       panic("ilock: no type");
@@ -872,8 +889,22 @@ static int is_console_path(char *path) {
 }
 
 static uint devfs_path(char *path) {
+  char *p;
+
   if (is_console_path(path))
     return DEVFS_CONSOLE_INO;
+  p = path;
+  if (p[0] == '/')
+    p++;
+  if (strncmp(p, "dev/tty", 7) == 0)
+    p += 7;
+  else if (strncmp(p, "tty", 3) == 0)
+    p += 3;
+  else
+    p = 0;
+  if (p != 0 && p[0] >= '1' && p[0] < '1' + DEVFS_TTY_COUNT && p[1] == '\0')
+    return DEVFS_TTY_INO + (uint)(p[0] - '1');
+
   if (path[0] == '/')
     path++;
   if (strncmp(path, "fnusvc.command", 14) == 0 && path[14] == '\0')
@@ -882,6 +913,153 @@ static uint devfs_path(char *path) {
     return DEVFS_FNU_SERVICES_INO;
   if (strncmp(path, ".fnuhealth", 10) == 0 && path[10] == '\0')
     return DEVFS_FNU_HEALTH_INO;
+  return 0;
+}
+
+// Name of the entry in dp that points at child, minus the dots.
+static int dir_name_of(struct inode *dp, uint child, char *name, uint size) {
+  struct dirent de;
+  uint off, i;
+
+  if (dp->type != T_DIR)
+    return -1;
+
+  if (dp->fs_type == FS_UFS2) {
+    const struct ufs2_volume *volume = storage_ufs2_volume(dp->dev);
+    uint inum;
+    for (i = 0; volume != 0 &&
+                ufs2_readdir(volume, dp->inum, i, &inum, name, size) == 0; i++)
+      if (inum == child && strncmp(name, ".", 2) != 0 &&
+          strncmp(name, "..", 3) != 0)
+        return 0;
+    return -1;
+  }
+
+  if (dp->fs_type == FS_FAT32) {
+    char block[BSIZE];
+    for (off = 0;; off += BSIZE) {
+      int n = fat32_read(dp->dev, dp->fat32_info.cluster, block, off, BSIZE);
+      if (n <= 0)
+        return -1;
+      for (i = 0; i + sizeof(struct fat32_dirent) <= (uint)n;
+           i += sizeof(struct fat32_dirent)) {
+        struct fat32_dirent *de32 = (struct fat32_dirent *)(block + i);
+        uint cluster, inum, k, len = 0;
+        if (de32->name[0] == 0)
+          return -1;
+        if (de32->name[0] == 0xe5 || de32->attr == FAT32_ATTR_LONG_NAME ||
+            de32->name[0] == '.')
+          continue;
+        cluster = ((uint)de32->first_cluster_high << 16) |
+                  de32->first_cluster_low;
+        inum = cluster ? cluster
+                       : (0x80000000u | (dp->fat32_info.cluster << 12) |
+                          ((off + i) / 32));
+        if (inum != child)
+          continue;
+        for (k = 0; k < 8 && de32->name[k] != ' ' && len + 2 < size; k++)
+          name[len++] = de32->name[k];
+        if (de32->name[8] != ' ' && len + 1 < size) {
+          name[len++] = '.';
+          for (k = 8; k < 11 && de32->name[k] != ' ' && len + 1 < size; k++)
+            name[len++] = de32->name[k];
+        }
+        name[len] = 0;
+        return 0;
+      }
+      if (n < BSIZE)
+        return -1;
+    }
+  }
+
+  for (off = 0; off < dp->size; off += sizeof(de)) {
+    if (readi(dp, (char *)&de, off, sizeof(de)) != sizeof(de))
+      return -1;
+    if (de.inum != child)
+      continue;
+    for (i = 0; i < DIRSIZ && i + 1 < size && de.name[i]; i++)
+      name[i] = de.name[i];
+    name[i] = 0;
+    if (strncmp(name, ".", 2) == 0 || strncmp(name, "..", 3) == 0)
+      continue;
+    return 0;
+  }
+  return -1;
+}
+
+static int path_prepend(char *buf, uint *pos, const char *s) {
+  uint n = strlen(s);
+
+  if (*pos < n + 1)
+    return -1;
+  *pos -= n;
+  memmove(buf + *pos, s, n);
+  buf[--(*pos)] = '/';
+  return 0;
+}
+
+// Walk up through `..`, naming each child in its parent, the way 4.4BSD's
+// getwd() did. No name cache to go stale.
+int inode_path(struct inode *start, char *buf, uint size) {
+  struct inode *ip, *parent;
+  char name[NAMEBUFSZ];
+  uint pos;
+  int depth;
+
+  if (size < 2)
+    return -1;
+  pos = size - 1;
+  buf[pos] = 0;
+
+  ip = idup(start);
+  for (depth = 0; depth < MAXPATHDEPTH; depth++) {
+    ilock(ip);
+    if (ip->type != T_DIR) {
+      iunlockput(ip);
+      return -1;
+    }
+    parent = ip->fs_type == FS_DEVFS ? 0 : dirlookup(ip, "..", 0);
+    if (parent == 0) {
+      iunlock(ip);
+      break;
+    }
+    if (parent->dev == ip->dev && parent->inum == ip->inum) {
+      iunlock(ip);
+      iput(parent);
+      break;
+    }
+    iunlock(ip);
+    ilock(parent);
+    if (dir_name_of(parent, ip->inum, name, sizeof(name)) < 0) {
+      iunlockput(parent);
+      iput(ip);
+      return -1;
+    }
+    iunlock(parent);
+    iput(ip);
+    ip = parent;
+    if (path_prepend(buf, &pos, name) < 0) {
+      iput(ip);
+      return -1;
+    }
+  }
+  if (depth == MAXPATHDEPTH) {
+    iput(ip);
+    return -1;
+  }
+
+  // the volume the walk ended on decides the prefix
+  if (ip->dev != ROOTDEV && storage_ufs2_volume(ip->dev) != 0 &&
+      path_prepend(buf, &pos, "data") < 0) {
+    iput(ip);
+    return -1;
+  }
+  iput(ip);
+
+  if (buf[pos] == 0) {
+    buf[--pos] = '/';
+  }
+  memmove(buf, buf + pos, size - pos);
   return 0;
 }
 

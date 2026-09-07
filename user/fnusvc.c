@@ -11,16 +11,25 @@ struct service {
   char *name;
   char *path;
   char *argv[2];
+  char *tty;              /* terminal to run on, 0 keeps the inherited one */
   pid_t pid;
   int state;
   int restarts;
   int restart_pending;
 };
 
+// one login per virtual terminal, reachable with alt+F1..F4
 static struct service services[] = {
-    {"fnu-health", "/usr/bin/fnu-health", {"/usr/bin/fnu-health", 0}, -1,
+    {"fnu-health", "/usr/bin/fnu-health", {"/usr/bin/fnu-health", 0}, 0, -1,
      SERVICE_STOPPED, 0, 0},
-    {"login", "/usr/bin/login", {"/usr/bin/login", 0}, -1, SERVICE_STOPPED, 0, 0},
+    {"login", "/usr/bin/login", {"/usr/bin/login", 0}, "/dev/tty1", -1,
+     SERVICE_STOPPED, 0, 0},
+    {"login2", "/usr/bin/login", {"/usr/bin/login", 0}, "/dev/tty2", -1,
+     SERVICE_STOPPED, 0, 0},
+    {"login3", "/usr/bin/login", {"/usr/bin/login", 0}, "/dev/tty3", -1,
+     SERVICE_STOPPED, 0, 0},
+    {"login4", "/usr/bin/login", {"/usr/bin/login", 0}, "/dev/tty4", -1,
+     SERVICE_STOPPED, 0, 0},
 };
 
 static int service_count = sizeof(services) / sizeof(services[0]);
@@ -75,6 +84,17 @@ static int start_service(struct service *service) {
     return -1;
   }
   if (pid == 0) {
+    if (service->tty != 0) {
+      int fd = open(service->tty, O_RDWR);
+      if (fd >= 0) {
+        close(0); close(1); close(2);
+        dup(fd);           /* 0 */
+        dup(fd);           /* 1 */
+        dup(fd);           /* 2 */
+        if (fd > 2)
+          close(fd);
+      }
+    }
     exec(service->path, service->argv);
     // Keep legacy development images bootable while preferring the UFS2
     // system layout used by release images.
@@ -182,17 +202,31 @@ static void process_command(char *command) {
   publish_status();
 }
 
+// SIGTERM from init. reverse order.
+static void stop_all(void) {
+  int i;
+
+  for (i = service_count - 1; i >= 0; i--)
+    stop_service(&services[i], 0);
+  publish_status();
+  exit();
+}
+
 int main(void) {
   char command[64];
+  struct siginfo si;
   int i;
   pid_t pid;
 
   printf("%s service supervisor\n", FNU_PRODUCT_NAME);
+  sigcatch(SIGMASK(SIGTERM));
   for (i = 0; i < service_count; i++)
     start_service(&services[i]);
   publish_status();
 
   for (;;) {
+    if (sigwait(&si, 0) == 0)
+      stop_all();
     while ((pid = waitpid(-1, WNOHANG)) > 0)
       reap_service(pid);
     if (read_command(command, sizeof(command)))

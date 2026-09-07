@@ -1,18 +1,11 @@
 #include "memlayout.h"
 #include "param.h"
 
-# The PRONINX kernel starts executing in this file. This file is linked with
-# the kernel C code, so it can refer to kernel symbols such as main().
-# The boot block jumps to entry below.
-
-# By convention, the _start symbol specifies the ELF entry point.
+# kernel entry, from the boot block. runs near 0x100000.
 .globl _start
 _start = V2P_WO(entry)
 
-# entrypoint just for jmp to high address
 entry:
-  # Currently run at around 0x100000.
-  # Set stack and Jmp to high addresses by indirect call.
   movq $KERNBASE,%rdx
 
   leaq stack(%rip),%rax
@@ -24,11 +17,9 @@ entry:
   addq %rdx,%rax
   jmp *%rax
 
-# actual entrypoint
 entry_high_address:
-  jmp main
+  jmp kmain
 
-# .comm is to prepare data in BSS
 .comm stack, KSTACKSIZE
 
 .section .note.GNU-stack,"",@progbits

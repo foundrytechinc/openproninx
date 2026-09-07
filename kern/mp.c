@@ -97,7 +97,7 @@ void mpinit(void) {
   }
   saved_mp_conf = mp_conf;
   ismp = 1;
-  lapic = (uint32_t *)DEVSPACE_P2V((uintptr_t)mp_conf->lapicaddr);
+  lapic = (uint32_t *)ioremap(mp_conf->lapicaddr, 4096);
 
   for (p = (uchar *)(mp_conf + 1), e = (uchar *)mp_conf + mp_conf->length;
        p < e;) {
@@ -113,7 +113,7 @@ void mpinit(void) {
     case MPIOAPIC:
       mp_ioapic = (struct mpioapic *)p;
       ioapicid = mp_ioapic->apicno;
-      ioapic = (struct ioapic *)DEVSPACE_P2V((uintptr_t)mp_ioapic->addr);
+      ioapic = (struct ioapic *)ioremap(mp_ioapic->addr, 4096);
       p += sizeof(struct mpioapic);
       continue;
     case MPBUS:
@@ -137,8 +137,8 @@ void mpinit(void) {
   }
 }
 
-extern char _binary_obj_kern_entryother_start[];
-extern char _binary_obj_kern_entryother_size[];
+extern char _binary_entryother_start[];
+extern char _binary_entryother_size[];
 
 static void mpenter(void) {
   switchkvm();
@@ -156,31 +156,33 @@ void startothers(void) {
   uint8_t *code;
   struct cpu *c;
   char *stack;
-  uint64_t *p4, *p3;
+  uint64_t *p4, *p3, *pd;
+  int i;
 
   // Write entry code to physical 0x7000.
   code = P2V(0x7000);
-  memmove(code, _binary_obj_kern_entryother_start,
-          (uintptr_t)_binary_obj_kern_entryother_size);
+  memmove(code, _binary_entryother_start,
+          (uintptr_t)_binary_entryother_size);
 
-  // Set up AP boot page table at 0x8000 (PML4) and 0x9000 (PDPT)
+  // AP boot tables: PML4 at 0x8000, PDPT at 0x9000, PD at 0xa000.
+  // 2M pages only, an AP may come up on a cpu without 1G page support.
   p4 = (uint64_t *)P2V(0x8000);
   p3 = (uint64_t *)P2V(0x9000);
+  pd = (uint64_t *)P2V(0xa000);
 
   memset(p4, 0, PGSIZE);
   memset(p3, 0, PGSIZE);
+  memset(pd, 0, PGSIZE);
 
-  // Entry 0 in PML4 -> maps 0..512GB to PDPT at physical 0x9000
-  p4[0] = 0x9000 | PTE_P | PTE_W;
+  for (i = 0; i < 512; i++)
+    pd[i] = ((uint64_t)i << 21) | PTE_P | PTE_W | PTE_PS;
 
-  // Entry 511 in PML4 -> maps higher-half to PDPT at physical 0x9000
-  p4[511] = 0x9000 | PTE_P | PTE_W;
+  p3[0] = 0xa000 | PTE_P | PTE_W;
+  p3[510] = 0xa000 | PTE_P | PTE_W;
 
-  // Entry 0 in PDPT -> maps 0..1GB with 1GB huge page to physical 0x0
-  p3[0] = 0x0 | PTE_P | PTE_W | PTE_PS;
-
-  // Entry 510 in PDPT -> maps 0xffffffff80000000 (KERNBASE) with 1GB huge page to physical 0x0
-  p3[510] = 0x0 | PTE_P | PTE_W | PTE_PS;
+  p4[0] = 0x9000 | PTE_P | PTE_W;               // identity, for the switch
+  p4[PTX4(DMAP_BASE)] = 0x9000 | PTE_P | PTE_W; // ap stacks live here
+  p4[511] = 0x9000 | PTE_P | PTE_W;             // kernel image
 
   cprintf("SMP: starting %d other CPUs...\n", ncpu - 1);
   for (c = cpus; c < cpus + ncpu; c++) {
@@ -204,4 +206,3 @@ void startothers(void) {
     cprintf("SMP: CPU%d online\n", (int)(c - cpus));
   }
 }
-

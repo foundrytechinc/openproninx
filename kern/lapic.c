@@ -1,6 +1,8 @@
 // The local APIC manages internal (non-I/O) interrupts.
 // See Chapter 8 and 10 of Intel SDM vol.3
 
+#include "defs.h"
+#include "param.h"
 #include "trap.h"
 #include "x86.h"
 
@@ -18,9 +20,7 @@
 #define ICR_DELIVS 0x00001000         // Delivery status
 #define ICR_LEVEL_ASSERT 0x00004000   // Level: Assert interrupt
 #define ICR_TRIGGER_LEVEL 0x00008000  // Trigger Mode: Level
-#define ICR_DEST_BCAST                                                         \
-  0x00080000                // Destination: Send to all APICs, including self.
-#define ICR_BUSY 0x00001000 // busy if this bit on? this is same as ICR_DELVIS
+#define ICR_DEST_OTHERS 0x000c0000 // Destination: every APIC but this one
 #define ICRHI (0x0310 / 4)  // Interrupt Command [63:32]
 #define TIMER (0x0320 / 4)  // Local Vector Table 0 (TIMER)
 #define TIMER_PERIODIC 0x00020000 // Periodic
@@ -60,6 +60,39 @@ void lapiceoi(void) {
   }
 }
 
+// counts per tick. the apic timer runs at the bus clock and nothing states
+// what that is: 1 GHz on qemu, 24 or 100 MHz on kaby lake.
+static uint32_t lapic_tval = 10000000;
+static uint64_t lapic_per_second;
+static int calibrated;
+
+// after NetBSD lapic_calibrate_timer, against the already calibrated tsc
+static void lapic_calibrate(void) {
+  uint32_t first, last;
+  uint64_t hz;
+
+  lapicw(TIMER, LVT_MASKED);
+  lapicw(TDCR, TDCR_X1);
+  lapicw(TICR, 0x80000000);
+  first = lapic[TCCR];
+  delay(50000);
+  last = lapic[TCCR];
+  lapicw(TICR, 0);
+  if (first <= last)
+    return;
+
+  hz = (uint64_t)(first - last) * 20;
+  hz = hz / 1000 * 1000;
+  if (hz < 1000000 || hz > 4000000000ULL)
+    return;
+  lapic_per_second = hz;
+  lapic_tval = (uint32_t)(hz / HZ);
+}
+
+uint64_t lapic_timer_hz(void) { return lapic_per_second; }
+
+uint32_t lapic_timer_reload(void) { return lapic_tval; }
+
 void lapicinit(void) {
   if (!lapic) {
     return;
@@ -72,15 +105,15 @@ void lapicinit(void) {
   // like unexpected interrupt?
   lapicw(SVR, SVR_ENABLE | (T_IRQ0 + IRQ_SPURIOUS));
 
-  // The timer repeatedly counts down at bus frequency
-  // from lapic[TICR] and then issues an interrupt.
-  // If PRONINX cared more about precise timekeeping,
-  // TICR would be calibrated using an external time source.
-  //
-  // See Intel SDM Vol3 10.5.4 APIC Timer
+  // The timer repeatedly counts down at bus frequency from lapic[TICR] and
+  // then issues an interrupt. See Intel SDM Vol3 10.5.4 APIC Timer
+  if (!calibrated) {
+    calibrated = 1;
+    lapic_calibrate();
+  }
   lapicw(TDCR, TDCR_X1);
   lapicw(TIMER, TIMER_PERIODIC | (T_IRQ0 + IRQ_TIMER));
-  lapicw(TICR, 10000000);
+  lapicw(TICR, lapic_tval);
 
   // Disable logical interrupt lines.
   lapicw(LINT0, LVT_MASKED);
@@ -115,11 +148,27 @@ int lapicid(void) {
   return lapic[ID] >> 24;
 }
 
-// Microsecond I/O delay using diagnostic port 0x84 reads (~1-1.25 us each)
-void microdelay(int us) {
-  for (int i = 0; i < us; i++) {
-    inb(0x84);
-  }
+// park every other core, as OpenBSD does before boot()
+void lapic_halt_others(void) {
+  if (!lapic)
+    return;
+
+  lapicw(ICRHI, 0);
+  lapicw(ICRLO, ICR_DEST_OTHERS | ICR_LEVEL_ASSERT | (T_IRQ0 + IRQ_HALT));
+  for (int i = 0; i < 1000 && (lapic[ICRLO] & ICR_DELIVS); i++)
+    delay(100);
+  delay(20000);
+}
+
+// firmware reset paths expect the boot processor. so does FreeBSD cpu_reset.
+void lapic_halt_to(uchar apicid) {
+  if (!lapic)
+    return;
+
+  lapicw(ICRHI, apicid << 24);
+  lapicw(ICRLO, ICR_LEVEL_ASSERT | (T_IRQ0 + IRQ_HALT));
+  for (int i = 0; i < 1000 && (lapic[ICRLO] & ICR_DELIVS); i++)
+    delay(100);
 }
 
 void lapicstartap(uchar apicid, uint32_t addr) {
@@ -129,15 +178,14 @@ void lapicstartap(uchar apicid, uint32_t addr) {
   // Send INIT (level-triggered) interrupt to reset other CPU.
   lapicw(ICRHI, apicid << 24);
   lapicw(ICRLO, ICR_DELIVM_INIT | ICR_TRIGGER_LEVEL | ICR_LEVEL_ASSERT);
-  microdelay(200);
+  delay(200);
   lapicw(ICRLO, ICR_DELIVM_INIT | ICR_TRIGGER_LEVEL);
-  microdelay(100);
+  delay(100);
 
   // Send startup IPI (twice!) to enter code.
   for (i = 0; i < 2; i++) {
     lapicw(ICRHI, apicid << 24);
     lapicw(ICRLO, ICR_DELIVM_STARTUP | (addr >> 12));
-    microdelay(200);
+    delay(200);
   }
 }
-

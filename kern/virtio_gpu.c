@@ -25,27 +25,18 @@ static struct vring_avail controlq_avail __attribute__((aligned(2)));
 static struct vring_used controlq_used __attribute__((aligned(4)));
 static uint16_t last_used_idx = 0;
 
-int virtio_gpu_available(void) {
-  return gpu_active;
-}
+int virtio_gpu_available(void) { return gpu_active; }
 
-void *virtio_gpu_framebuffer(void) {
-  return (void *)gpu_pixels;
-}
+void *virtio_gpu_framebuffer(void) { return (void *)gpu_pixels; }
 
-uint virtio_gpu_width(void) {
-  return gpu_width;
-}
+uint virtio_gpu_width(void) { return gpu_width; }
 
-uint virtio_gpu_height(void) {
-  return gpu_height;
-}
+uint virtio_gpu_height(void) { return gpu_height; }
 
-uint virtio_gpu_pitch(void) {
-  return gpu_pitch;
-}
+uint virtio_gpu_pitch(void) { return gpu_pitch; }
 
-static int virtio_gpu_exec(void *cmd, uint32_t cmd_sz, void *resp, uint32_t resp_sz) {
+static int virtio_gpu_exec(void *cmd, uint32_t cmd_sz, void *resp,
+                           uint32_t resp_sz) {
   acquire(&gpu_lock);
 
   // Setup descriptor 0: request buffer
@@ -73,7 +64,7 @@ static int virtio_gpu_exec(void *cmd, uint32_t cmd_sz, void *resp, uint32_t resp
   // Synchronous poll with timeout
   int timeout = 100000;
   while (controlq_used.index == last_used_idx && --timeout > 0) {
-    microdelay(10);
+    delay(10);
   }
   if (timeout == 0) {
     release(&gpu_lock);
@@ -131,33 +122,49 @@ static int virtio_gpu_probe(struct device *dev) {
   return 0;
 }
 
+// the whole bar, so a notify offset past one page still lands inside it
+static uint8_t *bar_map(const struct pci_device *p, uint8_t b, uint32_t off) {
+  uint64_t len = p->bar_size[b];
+
+  if (len < (uint64_t)off + 0x1000)
+    len = (uint64_t)off + 0x1000;
+  return (uint8_t *)ioremap(p->bar[b], len) + off;
+}
+
 static int virtio_gpu_attach(struct device *dev) {
   pci_enable_bus_master(&dev->pci);
 
   // Discover VirtIO PCI capabilities
-  uint8_t cap_ptr = pci_read8(dev->pci.bus, dev->pci.device, dev->pci.function, 0x34);
+  uint8_t cap_ptr =
+      pci_read8(dev->pci.bus, dev->pci.device, dev->pci.function, 0x34);
   uint8_t common_bar = 0xff, notify_bar = 0xff, isr_bar = 0xff;
   uint32_t common_off = 0, notify_off = 0, notify_mult = 0, isr_off = 0;
 
   while (cap_ptr) {
-    uint8_t cap_id = pci_read8(dev->pci.bus, dev->pci.device, dev->pci.function, cap_ptr);
+    uint8_t cap_id =
+        pci_read8(dev->pci.bus, dev->pci.device, dev->pci.function, cap_ptr);
     if (cap_id == 0x09) {
-      uint8_t cfg_type = pci_read8(dev->pci.bus, dev->pci.device, dev->pci.function, cap_ptr + 3);
-      uint8_t bar = pci_read8(dev->pci.bus, dev->pci.device, dev->pci.function, cap_ptr + 4);
-      uint32_t off = pci_read32(dev->pci.bus, dev->pci.device, dev->pci.function, cap_ptr + 8);
+      uint8_t cfg_type = pci_read8(dev->pci.bus, dev->pci.device,
+                                   dev->pci.function, cap_ptr + 3);
+      uint8_t bar = pci_read8(dev->pci.bus, dev->pci.device, dev->pci.function,
+                              cap_ptr + 4);
+      uint32_t off = pci_read32(dev->pci.bus, dev->pci.device,
+                                dev->pci.function, cap_ptr + 8);
       if (cfg_type == VIRTIO_PCI_CAP_COMMON_CFG) {
         common_bar = bar;
         common_off = off;
       } else if (cfg_type == VIRTIO_PCI_CAP_NOTIFY_CFG) {
         notify_bar = bar;
         notify_off = off;
-        notify_mult = pci_read32(dev->pci.bus, dev->pci.device, dev->pci.function, cap_ptr + 16);
+        notify_mult = pci_read32(dev->pci.bus, dev->pci.device,
+                                 dev->pci.function, cap_ptr + 16);
       } else if (cfg_type == VIRTIO_PCI_CAP_ISR_CFG) {
         isr_bar = bar;
         isr_off = off;
       }
     }
-    cap_ptr = pci_read8(dev->pci.bus, dev->pci.device, dev->pci.function, cap_ptr + 1);
+    cap_ptr = pci_read8(dev->pci.bus, dev->pci.device, dev->pci.function,
+                        cap_ptr + 1);
   }
 
   if (common_bar >= 6 || notify_bar >= 6 || dev->pci.bar[common_bar] == 0) {
@@ -165,11 +172,12 @@ static int virtio_gpu_attach(struct device *dev) {
     return -1;
   }
 
-  uint8_t *common_base = (uint8_t *)DEVSPACE_P2V(dev->pci.bar[common_bar]) + common_off;
-  uint8_t *notify_base = (uint8_t *)DEVSPACE_P2V(dev->pci.bar[notify_bar]) + notify_off;
+  uint8_t *common_base = bar_map(&dev->pci, common_bar, common_off);
+  uint8_t *notify_base = bar_map(&dev->pci, notify_bar, notify_off);
 
   gpu_common = (volatile struct virtio_pci_common_cfg *)common_base;
-  if (isr_bar < 6 && dev->pci.bar[isr_bar]) gpu_isr_reg = (volatile uint8_t *)DEVSPACE_P2V(dev->pci.bar[isr_bar]) + isr_off;
+  if (isr_bar < 6 && dev->pci.bar[isr_bar])
+    gpu_isr_reg = (volatile uint8_t *)bar_map(&dev->pci, isr_bar, isr_off);
 
   // Reset device
   gpu_common->device_status = 0;
@@ -209,7 +217,8 @@ static int virtio_gpu_attach(struct device *dev) {
   __sync_synchronize();
 
   uint16_t q0_notify_off = gpu_common->queue_notify_off;
-  gpu_notify_reg = (volatile uint16_t *)(notify_base + q0_notify_off * notify_mult);
+  gpu_notify_reg =
+      (volatile uint16_t *)(notify_base + q0_notify_off * notify_mult);
 
   gpu_common->device_status |= VIRTIO_STATUS_DRIVER_OK;
   __sync_synchronize();
@@ -222,11 +231,11 @@ static int virtio_gpu_attach(struct device *dev) {
   memset(&resp_info, 0, sizeof(resp_info));
 
   uint probed_w = 0, probed_h = 0;
-  if (virtio_gpu_exec(&cmd_info, sizeof(cmd_info), &resp_info, sizeof(resp_info)) == 0 &&
+  if (virtio_gpu_exec(&cmd_info, sizeof(cmd_info), &resp_info,
+                      sizeof(resp_info)) == 0 &&
       resp_info.hdr.type == VIRTIO_GPU_RESP_OK_DISPLAY_INFO) {
     for (int s = 0; s < VIRTIO_GPU_MAX_SCANOUTS; s++) {
-      if (resp_info.pmodes[s].enabled &&
-          resp_info.pmodes[s].rect.width > 0 &&
+      if (resp_info.pmodes[s].enabled && resp_info.pmodes[s].rect.width > 0 &&
           resp_info.pmodes[s].rect.height > 0) {
         probed_w = resp_info.pmodes[s].rect.width;
         probed_h = resp_info.pmodes[s].rect.height;
@@ -235,7 +244,8 @@ static int virtio_gpu_attach(struct device *dev) {
     }
   }
 
-  if (probed_w >= 1024 && probed_w <= 3840 && probed_h >= 768 && probed_h <= 2160) {
+  if (probed_w >= 1024 && probed_w <= 3840 && probed_h >= 768 &&
+      probed_h <= 2160) {
     gpu_width = probed_w;
     gpu_height = probed_h;
   } else {
@@ -248,7 +258,9 @@ static int virtio_gpu_attach(struct device *dev) {
   // Allocate contiguous backing buffer
   gpu_pixels = (uchar *)gpu_alloc_backing(fb_bytes, &gpu_phys);
   if (!gpu_pixels || !gpu_phys) {
-    cprintf("VIRTIO-GPU: failed to allocate framebuffer backing memory (%d bytes)\n", fb_bytes);
+    cprintf("VIRTIO-GPU: failed to allocate framebuffer backing memory (%u "
+            "bytes)\n",
+            fb_bytes);
     return -1;
   }
 
@@ -262,7 +274,8 @@ static int virtio_gpu_attach(struct device *dev) {
   cmd_create.format = VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM;
   cmd_create.width = gpu_width;
   cmd_create.height = gpu_height;
-  if (virtio_gpu_exec(&cmd_create, sizeof(cmd_create), &resp, sizeof(resp)) < 0 ||
+  if (virtio_gpu_exec(&cmd_create, sizeof(cmd_create), &resp, sizeof(resp)) <
+          0 ||
       resp.type != VIRTIO_GPU_RESP_OK_NODATA) {
     cprintf("VIRTIO-GPU: RESOURCE_CREATE_2D failed (resp 0x%x)\n", resp.type);
     return -1;
@@ -276,9 +289,11 @@ static int virtio_gpu_attach(struct device *dev) {
   cmd_attach.nr_entries = 1;
   cmd_attach.entries[0].addr = gpu_phys;
   cmd_attach.entries[0].length = (fb_bytes + 4095) & ~4095U;
-  if (virtio_gpu_exec(&cmd_attach, sizeof(cmd_attach), &resp, sizeof(resp)) < 0 ||
+  if (virtio_gpu_exec(&cmd_attach, sizeof(cmd_attach), &resp, sizeof(resp)) <
+          0 ||
       resp.type != VIRTIO_GPU_RESP_OK_NODATA) {
-    cprintf("VIRTIO-GPU: RESOURCE_ATTACH_BACKING failed (resp 0x%x)\n", resp.type);
+    cprintf("VIRTIO-GPU: RESOURCE_ATTACH_BACKING failed (resp 0x%x)\n",
+            resp.type);
     return -1;
   }
 
@@ -292,7 +307,8 @@ static int virtio_gpu_attach(struct device *dev) {
   cmd_scanout.rect.y = 0;
   cmd_scanout.rect.width = gpu_width;
   cmd_scanout.rect.height = gpu_height;
-  if (virtio_gpu_exec(&cmd_scanout, sizeof(cmd_scanout), &resp, sizeof(resp)) < 0 ||
+  if (virtio_gpu_exec(&cmd_scanout, sizeof(cmd_scanout), &resp, sizeof(resp)) <
+          0 ||
       resp.type != VIRTIO_GPU_RESP_OK_NODATA) {
     cprintf("VIRTIO-GPU: SET_SCANOUT failed (resp 0x%x)\n", resp.type);
     return -1;
@@ -307,7 +323,8 @@ static int virtio_gpu_attach(struct device *dev) {
   framebuffer_init_gpu(gpu_pixels, gpu_width, gpu_height, gpu_pitch);
   console_switch_to_gpu();
 
-  cprintf("VIRTIO-GPU: display activated (%dx%d 32bpp accelerated)\n", gpu_width, gpu_height);
+  cprintf("VIRTIO-GPU: display activated (%dx%d 32bpp accelerated)\n",
+          gpu_width, gpu_height);
   return 0;
 }
 
@@ -347,7 +364,8 @@ int virtio_gpu_set_resolution(uint w, uint h) {
   cmd_create.format = VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM;
   cmd_create.width = w;
   cmd_create.height = h;
-  if (virtio_gpu_exec(&cmd_create, sizeof(cmd_create), &resp, sizeof(resp)) < 0 ||
+  if (virtio_gpu_exec(&cmd_create, sizeof(cmd_create), &resp, sizeof(resp)) <
+          0 ||
       resp.type != VIRTIO_GPU_RESP_OK_NODATA) {
     return -1;
   }
@@ -360,7 +378,8 @@ int virtio_gpu_set_resolution(uint w, uint h) {
   cmd_attach.nr_entries = 1;
   cmd_attach.entries[0].addr = gpu_phys;
   cmd_attach.entries[0].length = (new_fb_bytes + 4095) & ~4095U;
-  if (virtio_gpu_exec(&cmd_attach, sizeof(cmd_attach), &resp, sizeof(resp)) < 0 ||
+  if (virtio_gpu_exec(&cmd_attach, sizeof(cmd_attach), &resp, sizeof(resp)) <
+          0 ||
       resp.type != VIRTIO_GPU_RESP_OK_NODATA) {
     return -1;
   }
@@ -375,7 +394,8 @@ int virtio_gpu_set_resolution(uint w, uint h) {
   cmd_scanout.rect.y = 0;
   cmd_scanout.rect.width = w;
   cmd_scanout.rect.height = h;
-  if (virtio_gpu_exec(&cmd_scanout, sizeof(cmd_scanout), &resp, sizeof(resp)) < 0 ||
+  if (virtio_gpu_exec(&cmd_scanout, sizeof(cmd_scanout), &resp, sizeof(resp)) <
+          0 ||
       resp.type != VIRTIO_GPU_RESP_OK_NODATA) {
     return -1;
   }
@@ -390,7 +410,8 @@ int virtio_gpu_set_resolution(uint w, uint h) {
   framebuffer_init_gpu(gpu_pixels, gpu_width, gpu_height, gpu_pitch);
   console_switch_to_gpu();
 
-  cprintf("VIRTIO-GPU: resolution changed to %dx%d (32bpp)\n", gpu_width, gpu_height);
+  cprintf("VIRTIO-GPU: resolution changed to %dx%d (32bpp)\n", gpu_width,
+          gpu_height);
   return 0;
 }
 

@@ -28,16 +28,17 @@ void uartinit(void) {
   }
   uart = 1;
 
-  // Acknowledge pre-existing interrupt conditions;
-  // enable interrupts.
-  inb(COM1 + 2);
-  inb(COM1 + 0);
-  ioapicenable(IRQ_COM1, 0);
-
-  // Announce that we're here.
   for (p = "OpenProninx...\n"; *p; p++) {
     uartputc(*p);
   }
+}
+
+void uartintr_enable(void) {
+  if (!uart)
+    return;
+  inb(COM1 + 2);
+  inb(COM1 + 0);
+  ioapicenable(IRQ_COM1, 0);
 }
 
 void uartputc(int c) {

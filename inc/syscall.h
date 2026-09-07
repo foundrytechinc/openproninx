@@ -40,6 +40,7 @@
 #define SYS_dup           22
 #define SYS_mknod         23
 #define SYS_chdir         24
+#define SYS_getcwd        64    /* char *buf, int size */
 #define SYS_chmod         53
 #define SYS_chown         54
 
@@ -81,6 +82,16 @@
 /* System Time */
 #define SYS_rtctime       56    /* struct rtctime *dst — copy RTC wall clock */
 
+/* Signals */
+#define SYS_signal        58    /* pid_t pid, int sig -- -1 is everyone */
+#define SYS_sigcatch      59    /* uint32_t mask -- signals to collect */
+#define SYS_sigwait       60    /* struct siginfo *out, int block */
+#define SYS_halt          61    /* int howto -- pid 1, or FNU_RB_FORCE */
+
+/* Machine inventory */
+#define SYS_hwinfo        62    /* struct hwinfo * */
+#define SYS_diskinfo      63    /* struct diskinfo *buf, int capacity */
+
 /* Storage Information */
 #define SYS_df            57    /* struct df_stat *buf[DF_ENTRIES_MAX] + int *count */
 
@@ -95,6 +106,6 @@
 #define SYS_passwd        50
 #define SYS_users         51
 
-#define PRONINX_SYSCALL_COUNT 58
+#define PRONINX_SYSCALL_COUNT 65
 
 #endif /* ifndef PRONINX_X86_64_SYSCALL_H */

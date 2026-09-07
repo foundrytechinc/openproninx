@@ -56,6 +56,8 @@ struct proc {
   struct context *context;    // swtch() here to run process
   void *chan;                 // If non-zero, sleeping on chan
   int killed;                 // If non-zero, have been killed
+  uint32_t sig_pending;       // raised, not yet taken
+  uint32_t sig_catch;         // taken by the process, not fatal
   uint uid;                   // Effective user ID
   uint gid;                   // Effective group ID
   int doas_grant;             // One-use elevation grant after password check

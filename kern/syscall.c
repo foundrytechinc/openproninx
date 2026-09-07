@@ -103,9 +103,16 @@ extern int64_t sys_waitpid(void);
 extern int64_t sys_pipe(void);
 extern int64_t sys_read(void);
 extern int64_t sys_kill(void);
+extern int64_t sys_signal(void);
+extern int64_t sys_sigcatch(void);
+extern int64_t sys_sigwait(void);
+extern int64_t sys_halt(void);
+extern int64_t sys_hwinfo(void);
+extern int64_t sys_diskinfo(void);
 extern int64_t sys_exec(void);
 extern int64_t sys_stat(void);
 extern int64_t sys_chdir(void);
+extern int64_t sys_getcwd(void);
 extern int64_t sys_dup(void);
 extern int64_t sys_getpid(void);
 extern int64_t sys_sbrk(void);
@@ -172,6 +179,12 @@ static int64_t (*syscalls[])(void) = {
     [SYS_wait]          = sys_wait,
     [SYS_waitpid]       = sys_waitpid,
     [SYS_kill]          = sys_kill,
+    [SYS_signal]        = sys_signal,
+    [SYS_sigcatch]      = sys_sigcatch,
+    [SYS_sigwait]       = sys_sigwait,
+    [SYS_halt]          = sys_halt,
+    [SYS_hwinfo]        = sys_hwinfo,
+    [SYS_diskinfo]      = sys_diskinfo,
     [SYS_exec]          = sys_exec,
     [SYS_sbrk]          = sys_sbrk,
     [SYS_malloc]        = sys_malloc,
@@ -189,6 +202,7 @@ static int64_t (*syscalls[])(void) = {
     [SYS_dup]           = sys_dup,
     [SYS_mknod]         = sys_mknod,
     [SYS_chdir]         = sys_chdir,
+    [SYS_getcwd]        = sys_getcwd,
     [SYS_getpid]        = sys_getpid,
     [SYS_sleep]         = sys_sleep,
     [SYS_getuid]        = sys_getuid,

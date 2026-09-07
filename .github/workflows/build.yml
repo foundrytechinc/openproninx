@@ -12,10 +12,12 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - name: Install the legacy build toolchain
-        run: sudo apt-get update && sudo apt-get install -y build-essential binutils qemu-system-x86
+      - name: Install the build toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bmake clang lld llvm gdisk mtools dosfstools qemu-system-x86 ovmf
       - name: Build and boot-smoke images without mutating sources
-        run: make ci && make smoke
+        run: bmake ci
       - name: Publish evaluation images
         uses: actions/upload-artifact@v4
         with:

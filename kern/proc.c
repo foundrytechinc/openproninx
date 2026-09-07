@@ -1,3 +1,4 @@
+#include "inc/signal.h"
 #include "proc.h"
 #include "defs.h"
 #include "mmu.h"
@@ -77,6 +78,8 @@ found:
   p->uid = 0;
   p->gid = 0;
   p->doas_grant = 0;
+  p->sig_pending = 0;
+  p->sig_catch = 0;
 
   release(&ptable.lock);
 
@@ -120,16 +123,15 @@ int64_t get_nprocs(void) {
 // Set up first user process.
 void userinit(void) {
   struct proc *p;
-  extern char _binary_obj_kern_initcode_start[],
-      _binary_obj_kern_initcode_size[];
+  extern char _binary_initcode_start[],
+      _binary_initcode_size[];
 
   p = allocproc();
-
   initproc = p;
   if ((p->pgdir = setupkvm()) == 0)
     panic("userinit: out of memory?");
-  inituvm(p->pgdir, _binary_obj_kern_initcode_start,
-          (size_t)_binary_obj_kern_initcode_size);
+  inituvm(p->pgdir, _binary_initcode_start,
+          (size_t)_binary_initcode_size);
   p->sz = PGSIZE;
   memset(p->tf, 0, sizeof(*p->tf));
   p->tf->cs = (SEG_UCODE << 3) | DPL_USER;
@@ -305,6 +307,8 @@ pid_t waitpid(pid_t target, int nohang) {
         p->parent = 0;
         p->name[0] = 0;
         p->killed = 0;
+        p->sig_pending = 0;
+        p->sig_catch = 0;
         p->state = UNUSED;
         release(&ptable.lock);
         return pid;
@@ -312,7 +316,8 @@ pid_t waitpid(pid_t target, int nohang) {
     }
 
     // No point waiting if we don't have any children.
-    if (!havekids || curproc->killed) {
+    if (!havekids || curproc->killed ||
+        (curproc->sig_pending & curproc->sig_catch)) {
       release(&ptable.lock);
       return -1;
     }
@@ -438,26 +443,106 @@ void wakeup(void *chan) {
   release(&ptable.lock);
 }
 
-// Kill the process with the given pid.
-// Process won't exit until it returns
-// to user space (see trap in trap.c).
-int kill(int pid) {
+static void raise_on(struct proc *p, int sig) {
+  if (sig != 0)
+    p->sig_pending |= SIGMASK(sig);
+  // a signal the process has not claimed is fatal, except to init
+  if (sig == SIGKILL ||
+      (sig != 0 && !(SIGMASK(sig) & p->sig_catch) && p->pid != 1))
+    p->killed = 1;
+  if (p->state == SLEEPING)
+    p->state = RUNNABLE;
+}
+
+// A signal the process asked to hear is a reason to leave an interruptible
+// sleep, exactly as tsleep returns EINTR under PCATCH in the BSDs. Without
+// this a caught signal only lands when the sleep expires on its own.
+int proc_interrupted(void) {
+  struct proc *p = myproc();
+
+  return p != 0 && (p->killed || (p->sig_pending & p->sig_catch));
+}
+
+// uid of a live process, for the signal permission check
+int proc_uid_of(pid_t pid, uint *uid) {
   struct proc *p;
+  int found = -1;
 
   acquire(&ptable.lock);
-  for (p = ptable.proc; p < &ptable.proc[NPROC]; p++) {
-    if (p->pid == pid) {
-      p->killed = 1;
-      // Wake process from sleep if necessary.
-      if (p->state == SLEEPING) {
-        p->state = RUNNABLE;
-      }
-      release(&ptable.lock);
-      return 0;
+  for (p = ptable.proc; p < &ptable.proc[NPROC]; p++)
+    if (p->state != UNUSED && p->pid == pid) {
+      *uid = p->uid;
+      found = 0;
+      break;
+    }
+  release(&ptable.lock);
+  return found;
+}
+
+// kill(pid, sig). pid -1 is everyone but init and the caller.
+int kill(int pid, int sig) {
+  struct proc *p, *self = myproc();
+  int hit = 0;
+
+  if (sig < 0 || sig >= NSIG)
+    return -1;
+
+  acquire(&ptable.lock);
+  if (pid == -1) {
+    for (p = ptable.proc; p < &ptable.proc[NPROC]; p++) {
+      if (p->state == UNUSED || p->pid <= 1 || p == self)
+        continue;
+      raise_on(p, sig);
+      hit = 1;
+    }
+  } else {
+    for (p = ptable.proc; p < &ptable.proc[NPROC]; p++) {
+      if (p->state == UNUSED || p->pid != pid)
+        continue;
+      raise_on(p, sig);
+      hit = 1;
+      break;
     }
   }
   release(&ptable.lock);
-  return -1;
+  return hit ? 0 : -1;
+}
+
+void signal_catch(uint32_t mask) {
+  struct proc *p = myproc();
+
+  acquire(&ptable.lock);
+  p->sig_catch = mask & ~SIGMASK(SIGKILL);
+  release(&ptable.lock);
+}
+
+// take one claimed signal. blocks until one arrives unless told not to.
+int signal_take(struct siginfo *out, int block) {
+  struct proc *p = myproc();
+  uint32_t ready;
+  int sig;
+
+  acquire(&ptable.lock);
+  for (;;) {
+    ready = p->sig_pending & p->sig_catch;
+    if (ready != 0)
+      break;
+    if (!block || p->killed) {
+      release(&ptable.lock);
+      return -1;
+    }
+    sleep(p, &ptable.lock);
+  }
+  for (sig = 1; sig < NSIG; sig++)
+    if (ready & SIGMASK(sig))
+      break;
+  p->sig_pending &= ~SIGMASK(sig);
+  release(&ptable.lock);
+
+  out->signo = sig;
+  out->reserved = 0;
+  out->sender = 0;
+  return 0;
 }
 
 // A fork child's very first scheduling by scheduler()
@@ -468,9 +553,6 @@ void forkret(void) {
   release(&ptable.lock);
 
   if (first) {
-    // Some initialization functions must be run in the context
-    // of a regular process (e.g., they call sleep), and thus cannot
-    // be run from main().
     first = 0;
     iinit(rootdev);
     if (!fs_root_readonly())

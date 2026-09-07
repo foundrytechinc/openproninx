@@ -44,11 +44,14 @@ static struct device *driver_allocate_device(void) {
   return dev;
 }
 
+static int pci_functions;
+
 int driver_attach_pci_devices(void) {
   uint bus, dev_idx, func;
   int attached_count = 0;
 
   cprintf("DRIVER: probing PCI devices...\n");
+  pci_functions = 0;
 
   for (bus = 0; bus < 256; bus++) {
     for (dev_idx = 0; dev_idx < 32; dev_idx++) {
@@ -62,6 +65,7 @@ int driver_attach_pci_devices(void) {
             break;
           continue;
         }
+        pci_functions++;
 
         struct pci_device pci_dev;
         memset(&pci_dev, 0, sizeof(pci_dev));
@@ -76,25 +80,7 @@ int driver_attach_pci_devices(void) {
         pci_dev.subclass = pci_read8(bus, dev_idx, func, PCI_REG_SUBCLASS);
         pci_dev.prog_if = pci_read8(bus, dev_idx, func, PCI_REG_PROG_IF);
 
-        for (int b = 0; b < 6; b++) {
-          uint offset = PCI_REG_BAR0 + b * 4;
-          uint32_t bar = pci_read32(bus, dev_idx, func, offset);
-          if (bar & 1) {
-            pci_dev.bar_is_io[b] = 1;
-            pci_dev.bar[b] = bar & ~3U;
-            pci_write32(bus, dev_idx, func, offset, 0xffffffff);
-            uint32_t mask = pci_read32(bus, dev_idx, func, offset);
-            pci_write32(bus, dev_idx, func, offset, bar);
-            pci_dev.bar_size[b] = (~(mask & ~3U)) + 1;
-          } else {
-            pci_dev.bar_is_io[b] = 0;
-            pci_dev.bar[b] = bar & ~0xfU;
-            pci_write32(bus, dev_idx, func, offset, 0xffffffff);
-            uint32_t mask = pci_read32(bus, dev_idx, func, offset);
-            pci_write32(bus, dev_idx, func, offset, bar);
-            pci_dev.bar_size[b] = (~(mask & ~0xfU)) + 1;
-          }
-        }
+        pci_read_bars(bus, dev_idx, func, &pci_dev);
 
         if (pci_dev.bar_is_io[0]) {
           pci_dev.io_base = (uint16_t)pci_dev.bar[0];
@@ -121,7 +107,8 @@ int driver_attach_pci_devices(void) {
 
         for (int i = 0; i < driver_mgr.driver_count; i++) {
           struct driver *drv = &driver_mgr.drivers[i];
-          if (drv->bus_type == BUS_TYPE_PCI || drv->bus_type == BUS_TYPE_UNKNOWN) {
+          if (drv->bus_type == BUS_TYPE_PCI ||
+              drv->bus_type == BUS_TYPE_UNKNOWN) {
             int score = drv->probe(&temp_dev);
             if (score > best_score) {
               best_score = score;
@@ -143,7 +130,10 @@ int driver_attach_pci_devices(void) {
           dev->driver = best_driver;
           dev->type = best_driver->dev_type;
 
-          if (dev->mmio_paddr != 0) {
+          if (!dev->pci.bar_is_io[0])
+            dev->mmio_size = dev->pci.bar_size[0];
+
+          if (dev->mmio_paddr != 0 && dev->mmio_size != 0) {
             dev->mmio_vaddr = ioremap(dev->mmio_paddr, dev->mmio_size);
           }
 
@@ -157,11 +147,11 @@ int driver_attach_pci_devices(void) {
             dev->active = 1;
             attached_count++;
             cprintf("DRIVER: attached device '%s' (driver '%s', IRQ %d)\n",
-                    dev->name[0] ? dev->name : "unnamed",
-                    best_driver->name, dev->irq);
+                    dev->name[0] ? dev->name : "unnamed", best_driver->name,
+                    dev->irq);
           } else {
-            cprintf("DRIVER: attach failed for device on PCI %d:%d.%d\n",
-                    bus, dev_idx, func);
+            cprintf("DRIVER: attach failed for device on PCI %d:%d.%d\n", bus,
+                    dev_idx, func);
           }
           release(&driver_mgr.lock);
         }
@@ -188,6 +178,19 @@ int driver_dispatch_irq(int irq) {
     }
   }
   return handled;
+}
+
+int driver_device_count(void) { return driver_mgr.device_count; }
+
+int driver_pci_function_count(void) { return pci_functions; }
+
+// nothing masters the bus across a power change
+void driver_shutdown_all(void) {
+  for (int i = 0; i < driver_mgr.device_count; i++) {
+    struct device *dev = &driver_mgr.devices[i];
+    if (dev->active && dev->driver && dev->driver->shutdown)
+      dev->driver->shutdown(dev);
+  }
 }
 
 void driver_poll_all(void) {

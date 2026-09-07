@@ -1,11 +1,15 @@
-*~
-_*
+# Build output
+obj/
 *.o
+*.a
 *.d
 *.asm
 *.sym
+*.bin
 *.img
-vectors.S
+kern/vectors.S
+
+# Generated boot and kernel blobs
 bootblock
 entryother
 initcode
@@ -13,10 +17,15 @@ initcode.out
 kernel
 kernelmemfs
 mkfs
+
+# Debugger and run artefacts
 .gdbinit
-*.bin
 qemu.log
-obj/
+
+# Editor leftovers
+*~
+_*
+
 # Development-only reference checkout used to audit the UFS2 on-disk format.
 # Deliberately not an embedded FreeBSD source dependency.
 third_party/freebsd-src/

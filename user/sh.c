@@ -1,7 +1,7 @@
 #include "user/user.h"
 #include "inc/product.h"
 
-char current_dir[64] = "/";
+char current_dir[MAXPATHLEN] = "/";
 char current_user[USER_NAME_MAX] = "user";
 
 /* ---- FNU / PSH command history. A simple ring buffer: HIST_LEN entries,
@@ -113,6 +113,12 @@ struct cmd *parsecmd(char*);
 void runcmd(struct cmd*) __attribute__((noreturn));
 
 static struct procinfo status_processes[64];
+
+// the kernel owns the path; the prompt only reports it
+static void refresh_cwd(void) {
+  if (getcwd(current_dir, sizeof(current_dir)) < 0)
+    safestrcpy(current_dir, "?", sizeof(current_dir));
+}
 
 static void resolve_current_user(void) {
   struct user_info info;
@@ -269,21 +275,25 @@ static int psh_getch(void) {
 }
 
 static void psh_bs_n(int n) {
-  while (n-- > 0) {
-    write(2, "\b \b", 3);
+  char out[96];
+  int i;
+
+  while (n > 0) {
+    int chunk = n > (int)sizeof(out) / 3 ? (int)sizeof(out) / 3 : n;
+    for (i = 0; i < chunk; i++) {
+      out[i * 3] = '\b';
+      out[i * 3 + 1] = ' ';
+      out[i * 3 + 2] = '\b';
+    }
+    write(2, out, chunk * 3);
+    n -= chunk;
   }
 }
 
-static void psh_redraw_line(const char *buf, int len) {
-  int i;
-  psh_bs_n(len);
-  for (i = 0; i < len; i++)
-    write(2, &buf[i], 1);
-  /* Clear anything after the new cursor position. */
-  for (i = 0; i < 10; i++)
-    write(2, " ", 1);
-  for (i = 0; i < 10; i++)
-    write(2, "\b", 1);
+/* Erase exactly what is on screen, then lay down exactly what is in buf. */
+static void psh_redraw_line(const char *buf, int onscreen) {
+  psh_bs_n(onscreen);
+  write(2, (char *)buf, strlen(buf));
 }
 
 int
@@ -419,6 +429,7 @@ main(void)
 
   setforeground(0);
   resolve_current_user();
+  refresh_cwd();
 
   while((fd = open("/dev/console", O_RDWR)) >= 0){
     if(fd >= 3){
@@ -470,6 +481,7 @@ main(void)
       printf("PSH (Proninx Shell) -- part of FNU userland\n");
       printf("Built-in commands:\n");
       printf("  cd <dir>   - Change directory\n");
+      printf("  pwd        - Print the working directory\n");
       printf("  clear      - Clear screen\n");
       printf("  fnufetch   - Pretty system information (FNU fetch)\n");
       printf("  fnudf      - Disk usage summary (FNU df -h style)\n");
@@ -522,12 +534,14 @@ main(void)
     }
 
     if(command_is(cmd, "reboot")) {
-      reboot();
+      if(reboot() < 0)
+        printf("reboot: denied\n");
       continue;
     }
 
     if(command_is(cmd, "poweroff") || command_is(cmd, "shutdown") || command_is(cmd, "halt")) {
-      poweroff();
+      if(poweroff() < 0)
+        printf("poweroff: denied\n");
       continue;
     }
 
@@ -572,10 +586,16 @@ main(void)
       continue;
     }
 
+     if(command_is(cmd, "pwd")){
+       refresh_cwd();
+       printf("%s\n", current_dir);
+       continue;
+     }
+
      if(cmd[0] == 'c' && cmd[1] == 'd' && (cmd[2] == ' ' || cmd[2] == '\n' || cmd[2] == '\r' || cmd[2] == 0)){
        char *dir = cmd + 2;
        while(*dir == ' ') dir++;
-       
+
        if(*dir == '\n' || *dir == '\r' || *dir == 0){
          dir = "/";
        } else {
@@ -583,54 +603,11 @@ main(void)
          while(*end && *end != '\n' && *end != '\r') end++;
          *end = 0;
        }
-       
-       if(chdir(dir) < 0){
+
+       if(chdir(dir) < 0)
          dprintf(2, "cd: cannot change to %s\n", dir);
-       } else {
-         if(strncmp(dir, "..", 3) == 0){
-           int len = strlen(current_dir);
-           if(len > 1){
-             int i;
-             for(i = len - 1; i >= 0; i--){
-               if(current_dir[i] == '/'){
-                 current_dir[i] = 0;
-                 if(i == 0){
-                   safestrcpy(current_dir, "/", sizeof(current_dir));
-                 }
-                 break;
-               }
-             }
-           }
-         } else if(dir[0] == '/'){
-           safestrcpy(current_dir, dir, sizeof(current_dir));
-           
-           int len = strlen(current_dir);
-           if(len >= 3 && current_dir[len-3] == '/' && current_dir[len-2] == '.' && current_dir[len-1] == '.'){
-             current_dir[len-3] = 0;
-             int i;
-             for(i = len - 4; i >= 0; i--){
-               if(current_dir[i] == '/'){
-                 current_dir[i] = 0;
-                 if(i == 0){
-                   safestrcpy(current_dir, "/", sizeof(current_dir));
-                 }
-                 break;
-               }
-             }
-           }
-         } else {
-           int len = strlen(current_dir);
-           if(len > 0 && current_dir[len-1] != '/' && len < 62){
-             current_dir[len++] = '/';
-             current_dir[len] = 0;
-           }
-           int i = 0;
-           while(dir[i] && len < 63){
-             current_dir[len++] = dir[i++];
-           }
-           current_dir[len] = 0;
-         }
-       }
+       else
+         refresh_cwd();
        continue;
      }
 

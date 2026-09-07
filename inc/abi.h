@@ -83,6 +83,15 @@ struct fb_var_screeninfo {
     uint32 bits_per_pixel; // bits per pixel
 };
 
+/* Every mode the adapter itself offers (SYS_ioctl FBIOGET_MODELIST) */
+#define FBIOGET_MODELIST 0x4602
+#define FBIODUMPMODES    0x4603  /* raw mode table to the console */
+#define FB_MODELIST_MAX 96
+struct fb_modelist {
+    uint32 count;
+    struct { uint16 width, height, bpp; } mode[FB_MODELIST_MAX];
+};
+
 /* Network Ping Request (SYS_ping) */
 struct network_ping_request {
   uint8 address[4];
@@ -153,6 +162,54 @@ struct df_stat {
 /* ========================================================================== */
 
 /* In-Kernel Account Information (SYS_users) */
+/* Machine inventory, filled by sys_hwinfo. */
+#define HW_BRAND_MAX  49
+#define HW_VENDOR_MAX 13
+struct hwinfo {
+  char     cpu_brand[HW_BRAND_MAX];
+  char     cpu_vendor[HW_VENDOR_MAX];
+  uint8    pad0[2];
+  uint32   cpu_count;
+  uint32   cpu_family;
+  uint32   cpu_model;
+  uint32   cpu_stepping;
+  uint64   tsc_hz;              /* 0 when the tsc could not be calibrated */
+  uint64   cpu_base_hz;         /* rated non-turbo clock, 0 when unknown */
+  uint64   cpu_max_hz;          /* highest turbo clock, 0 when unknown */
+  uint32   fb_width;
+  uint32   fb_height;
+  uint32   fb_bpp;
+  uint32   fb_columns;
+  uint32   fb_rows;
+  uint32   pci_devices;         /* functions a driver claimed */
+  uint32   pci_total;           /* functions the bus scan found */
+  uint32   fb_modeset;          /* non-zero when the mode can change */
+  uint32   fb_source;           /* FNU_FB_SOURCE_*: who picked the size */
+  uint32   pad1;
+  uint64   fb_vram;             /* video memory the adapter admits to, bytes */
+  uint64   ram_total;
+  uint64   ram_free;
+};
+
+/* One attached block device, filled by sys_diskinfo. */
+#define DISK_ENTRIES_MAX 8
+#define DISK_MODEL_MAX   41
+#define DISK_SERIAL_MAX  21
+#define FNU_DISK_NONE    0
+#define FNU_DISK_SATA    1
+#define FNU_DISK_NVME    2
+#define FNU_DISK_RAMDISK 3
+struct diskinfo {
+  char     model[DISK_MODEL_MAX];
+  char     serial[DISK_SERIAL_MAX];
+  uint8    kind;
+  uint8    pad0[1];
+  uint32   sector_size;
+  uint32   link_gen;            /* SATA generation, 0 when not applicable */
+  uint32   pad1;
+  uint64   sectors;
+};
+
 #define USER_NAME_MAX 16
 struct user_info {
   char name[USER_NAME_MAX];
