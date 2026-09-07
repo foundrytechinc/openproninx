@@ -77,7 +77,7 @@ static int nvme_submit_admin_cmd(struct nvme_sqe *cmd, struct nvme_cqe *resp) {
   for (spin = 0; spin < 500000; spin++) {
     if ((cqe->status & 1) == q->cq_phase)
       break;
-    microdelay(10);
+    delay(10);
   }
 
   if (spin == 500000) {
@@ -117,7 +117,7 @@ static int nvme_submit_io_cmd(struct nvme_sqe *cmd, struct nvme_cqe *resp) {
   for (spin = 0; spin < 500000; spin++) {
     if ((cqe->status & 1) == q->cq_phase)
       break;
-    microdelay(10);
+    delay(10);
   }
 
   if (spin == 500000) {
@@ -140,7 +140,8 @@ static int nvme_submit_io_cmd(struct nvme_sqe *cmd, struct nvme_cqe *resp) {
   return status == 0 ? 0 : -1;
 }
 
-static int nvme_init_queue(struct nvme_queue *q, uint16_t qid, uint16_t size, uint32_t db_stride) {
+static int nvme_init_queue(struct nvme_queue *q, uint16_t qid, uint16_t size,
+                           uint32_t db_stride) {
   q->qid = qid;
   q->size = size;
   q->sq_tail = 0;
@@ -151,8 +152,10 @@ static int nvme_init_queue(struct nvme_queue *q, uint16_t qid, uint16_t size, ui
   void *sq = kalloc();
   void *cq = kalloc();
   if (!sq || !cq) {
-    if (sq) kfree(sq);
-    if (cq) kfree(cq);
+    if (sq)
+      kfree(sq);
+    if (cq)
+      kfree(cq);
     return -1;
   }
   memset(sq, 0, PGSIZE);
@@ -180,13 +183,13 @@ static int nvme_probe_device(struct device *dev) {
 }
 
 static int nvme_attach_device(struct device *dev) {
-  uint32_t bar0_phys = dev->pci.bar[0];
+  uint64_t bar0_phys = dev->pci.bar[0];
   if (bar0_phys == 0 || dev->pci.bar_is_io[0]) {
     cprintf("NVMe: invalid BAR0 MMIO\n");
     return -1;
   }
 
-  volatile uint32_t *regs = (volatile uint32_t *)DEVSPACE_P2V(bar0_phys);
+  volatile uint32_t *regs = (volatile uint32_t *)ioremap(bar0_phys, 0x2000);
   initlock(&nvme_state.lock, "nvme");
   nvme_state.mmio = regs;
   nvme_state.dev = dev;
@@ -199,26 +202,30 @@ static int nvme_attach_device(struct device *dev) {
   uint32_t csts = nvme_read32(NVME_REG_CSTS);
   if (csts & NVME_CSTS_RDY) {
     nvme_write32(NVME_REG_CC, 0);
-    for (int i = 0; i < 500 && (nvme_read32(NVME_REG_CSTS) & NVME_CSTS_RDY); i++)
-      microdelay(100);
+    for (int i = 0; i < 500 && (nvme_read32(NVME_REG_CSTS) & NVME_CSTS_RDY);
+         i++)
+      delay(100);
   }
 
   // Setup Admin Queues
-  if (nvme_init_queue(&nvme_state.admin_q, 0, NVME_ADMIN_Q_SIZE, nvme_state.db_stride) < 0) {
+  if (nvme_init_queue(&nvme_state.admin_q, 0, NVME_ADMIN_Q_SIZE,
+                      nvme_state.db_stride) < 0) {
     cprintf("NVMe: failed to allocate admin queues\n");
     return -1;
   }
 
-  nvme_write32(NVME_REG_AQA, ((NVME_ADMIN_Q_SIZE - 1) << 16) | (NVME_ADMIN_Q_SIZE - 1));
+  nvme_write32(NVME_REG_AQA,
+               ((NVME_ADMIN_Q_SIZE - 1) << 16) | (NVME_ADMIN_Q_SIZE - 1));
   nvme_write64(NVME_REG_ASQ, V2P(nvme_state.admin_q.sq_virt));
   nvme_write64(NVME_REG_ACQ, V2P(nvme_state.admin_q.cq_virt));
 
   // Enable Controller
-  uint32_t cc = NVME_CC_EN | NVME_CC_CSS_NVM | NVME_CC_MPS_4K | NVME_CC_IOCQES | NVME_CC_IOSQES;
+  uint32_t cc = NVME_CC_EN | NVME_CC_CSS_NVM | NVME_CC_MPS_4K | NVME_CC_IOCQES |
+                NVME_CC_IOSQES;
   nvme_write32(NVME_REG_CC, cc);
 
   for (int i = 0; i < 500 && !(nvme_read32(NVME_REG_CSTS) & NVME_CSTS_RDY); i++)
-    microdelay(100);
+    delay(100);
 
   if (!(nvme_read32(NVME_REG_CSTS) & NVME_CSTS_RDY)) {
     cprintf("NVMe: controller failed to become ready\n");
@@ -226,7 +233,8 @@ static int nvme_attach_device(struct device *dev) {
   }
 
   // Setup I/O Queues
-  if (nvme_init_queue(&nvme_state.io_q, 1, NVME_IO_Q_SIZE, nvme_state.db_stride) < 0) {
+  if (nvme_init_queue(&nvme_state.io_q, 1, NVME_IO_Q_SIZE,
+                      nvme_state.db_stride) < 0) {
     cprintf("NVMe: failed to allocate IO queues\n");
     return -1;
   }
@@ -276,13 +284,14 @@ static int nvme_attach_device(struct device *dev) {
       nvme_state.namespaces[0].present = (nsze > 0);
       nvme_state.active_namespace_count = 1;
 
-      cprintf("NVMe: Namespace 1 ready, %d MB (%d sectors of %d bytes)\n",
-              (uint)(nsze * sector_size / (1024 * 1024)),
-              (uint)nsze, sector_size);
+      cprintf("NVMe: Namespace 1 ready, %u MB (%lu sectors of %u bytes)\n",
+              (uint)(nsze * sector_size / (1024 * 1024)), (uint64_t)nsze,
+              (uint)sector_size);
     }
     kfree(ident_buf);
   }
 
+  safestrcpy(dev->name, "nvme0", sizeof(dev->name));
   nvme_state.initialized = 1;
   cprintf("NVMe: PCIe controller initialized\n");
   return 0;
@@ -291,6 +300,30 @@ static int nvme_attach_device(struct device *dev) {
 static void nvme_intr(struct device *dev) {
   // NVMe interrupts are acknowledged during completion queue polling.
   // In interrupt mode, mask/unmask can be updated here.
+}
+
+// NVMe 1.4 sec 7.6.2, as FreeBSD nvme_ctrlr_shutdown does it. a controller
+// still fetching commands writes into memory that is no longer ours.
+static void nvme_shutdown(struct device *dev) {
+  uint32_t cc, csts;
+  int i;
+
+  if (!nvme_state.initialized || nvme_state.mmio == 0)
+    return;
+
+  cc = nvme_read32(NVME_REG_CC);
+  cc = (cc & ~NVME_CC_SHN_MASK) | NVME_CC_SHN_NORMAL;
+  nvme_write32(NVME_REG_CC, cc);
+
+  for (i = 0; i < 5000; i++) {
+    csts = nvme_read32(NVME_REG_CSTS);
+    if (csts == 0xffffffffu)
+      return; // the drive left
+    if ((csts & NVME_CSTS_SHST_MASK) == NVME_CSTS_SHST_DONE)
+      return;
+    delay(1000);
+  }
+  cprintf("NVMe: controller did not finish its shutdown\n");
 }
 
 void nvme_driver_init(void) {
@@ -302,12 +335,14 @@ void nvme_driver_init(void) {
   drv.probe = nvme_probe_device;
   drv.attach = nvme_attach_device;
   drv.intr = nvme_intr;
+  drv.shutdown = nvme_shutdown;
   driver_register(&drv);
 }
 
 void nvme_init(void) {
   struct pci_device pci;
-  if (pci_find_device_by_class(PCI_CLASS_STORAGE, PCI_SUBCLASS_NVME, PCI_PROGIF_NVME, &pci) == 0) {
+  if (pci_find_device_by_class(PCI_CLASS_STORAGE, PCI_SUBCLASS_NVME,
+                               PCI_PROGIF_NVME, &pci) == 0) {
     struct device dev;
     memset(&dev, 0, sizeof(dev));
     dev.bus = BUS_TYPE_PCI;
@@ -320,11 +355,14 @@ void nvme_init(void) {
 uint64_t nvme_size(uint ns_id) {
   if (!nvme_state.initialized || ns_id >= NVME_MAX_NAMESPACES)
     return 0;
-  return nvme_state.namespaces[ns_id].present ? nvme_state.namespaces[ns_id].sector_count : 0;
+  return nvme_state.namespaces[ns_id].present
+             ? nvme_state.namespaces[ns_id].sector_count
+             : 0;
 }
 
 int nvme_read(uint ns_id, uint64_t lba, uint count, void *dst) {
-  if (!nvme_state.initialized || ns_id >= NVME_MAX_NAMESPACES || !nvme_state.namespaces[ns_id].present)
+  if (!nvme_state.initialized || ns_id >= NVME_MAX_NAMESPACES ||
+      !nvme_state.namespaces[ns_id].present)
     return -1;
 
   struct nvme_sqe cmd;
@@ -340,7 +378,8 @@ int nvme_read(uint ns_id, uint64_t lba, uint count, void *dst) {
 }
 
 int nvme_write(uint ns_id, uint64_t lba, uint count, const void *src) {
-  if (!nvme_state.initialized || ns_id >= NVME_MAX_NAMESPACES || !nvme_state.namespaces[ns_id].present)
+  if (!nvme_state.initialized || ns_id >= NVME_MAX_NAMESPACES ||
+      !nvme_state.namespaces[ns_id].present)
     return -1;
 
   struct nvme_sqe cmd;

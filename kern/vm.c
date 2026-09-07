@@ -1,110 +1,47 @@
 #include "defs.h"
+#include "inc/bootinfo.h"
 #include "memlayout.h"
 #include "mmu.h"
+#include "param.h"
 #include "proc.h"
+#include "spinlock.h"
+#include "trap.h"
 #include "x86.h"
 
 extern char data[]; // defined by kernel.ld
+extern char end[];
+
+static uintptr_t iomap_next = IOMAP_BASE;
 pte_t *kpgdir;      // for use in scheduler()
 
 extern uintptr_t phys_top;
+extern uintptr_t phys_map_top;
 
-// There is one page table per process, plus one that's used when
-// a CPU is not running any process (kpgdir). The kernel uses the
-// current process's page table during system calls and interrupts;
-// page protection bits prevent user code from using the kernel's
-// mappings.
-//
-// setupkvm() and exec() set up every page table like this:
-//
-//   0..KERNBASE: user memory (text+data+stack+heap), mapped to
-//                phys memory allocated by the kernel
-//   KERNBASE..KERNBASE+EXTMEM: mapped to 0..EXTMEM (for I/O space)
-//   KERNBASE+EXTMEM..data: mapped to EXTMEM..V2P(data)
-//                for the kernel's instructions and r/o data
-//   data..KERNBASE+PHYSTOP: mapped to V2P(data)..PHYSTOP,
-//                                  rw data + free physical memory
-//   0xfe000000..0: mapped direct (devices such as ioapic and lapic)
-//
-// The kernel allocates physical memory for its heap and for user memory
-// between V2P(end) and the end of physical memory (PHYSTOP)
-// (directly addressable from end..P2V(PHYSTOP)).
+#define SIZE_2M 0x200000ULL
+#define SIZE_1G 0x40000000ULL
 
-// This table defines the kernel's mappings, which are present in
-// every process's page table.
-static struct kmap {
-  void *virt;
-  uintptr_t phys_start;
-  uintptr_t phys_end;
-  int perm;
-} kmap[8];
-static int nkmap;
+static int have_1g;
 
-// Initialize kmap at runtime because V2P() cannot be used in static initializers.
-void init_kmap(void) {
-  uint32_t fb_phys;
-  uintptr_t fb_start, fb_end;
+static int cpu_has_1g(void) {
+  uint32_t a, b, c, d;
 
-  // I/O space
-  kmap[0].virt = (void *)KERNBASE;
-  kmap[0].phys_start = 0;
-  kmap[0].phys_end = EXTMEM;
-  kmap[0].perm = PTE_W;
-
-  // kern text+rodata
-  kmap[1].virt = (void *)KERNLINK;
-  kmap[1].phys_start = V2P(KERNLINK);
-  kmap[1].phys_end = V2P(data);
-  kmap[1].perm = 0;
-
-  // kern data+memory
-  kmap[2].virt = (void *)data;
-  kmap[2].phys_start = V2P(data);
-  kmap[2].phys_end = phys_top;
-  kmap[2].perm = PTE_W;
-
-  nkmap = 3;
-  fb_phys = framebuffer_phys();
-  if (fb_phys && fb_phys >= DEVSPACE_PHYS) {
-    fb_start = PGROUNDDOWN((uintptr_t)fb_phys);
-    fb_end = PGROUNDUP((uintptr_t)fb_phys + framebuffer_size());
-    if (fb_end > 0x100000000ULL)
-      fb_end = 0x100000000ULL;
-
-    if (fb_start > DEVSPACE_PHYS) {
-      kmap[nkmap].virt = DEVSPACE_P2V(DEVSPACE_PHYS);
-      kmap[nkmap].phys_start = DEVSPACE_PHYS;
-      kmap[nkmap].phys_end = fb_start;
-      kmap[nkmap].perm = PTE_W;
-      nkmap++;
-    }
-
-    kmap[nkmap].virt = DEVSPACE_P2V(fb_start);
-    kmap[nkmap].phys_start = fb_start;
-    kmap[nkmap].phys_end = fb_end;
-    kmap[nkmap].perm = PTE_W | PTE_PWT; // Write-Combining via PAT entry 1
-    nkmap++;
-
-    if (fb_end < 0x100000000ULL) {
-      kmap[nkmap].virt = DEVSPACE_P2V(fb_end);
-      kmap[nkmap].phys_start = fb_end;
-      kmap[nkmap].phys_end = 0x100000000ULL;
-      kmap[nkmap].perm = PTE_W;
-      nkmap++;
-    }
-  } else {
-    kmap[nkmap].virt = DEVSPACE_P2V(DEVSPACE_PHYS);
-    kmap[nkmap].phys_start = DEVSPACE_PHYS;
-    kmap[nkmap].phys_end = 0x100000000ULL;
-    kmap[nkmap].perm = PTE_W;
-    nkmap++;
-  }
+  cpuid_count(0x80000000u, 0, &a, &b, &c, &d);
+  if (a < 0x80000001u)
+    return 0;
+  cpuid_count(0x80000001u, 0, &a, &b, &c, &d);
+  return (d & (1u << 26)) != 0;
 }
 
-// Set up CPU's kernel segment descriptors.
-// Run once on entry on each CPU.
+#define TSS_LO(p) ((uint32_t)((uintptr_t)(p) & 0xffffffff))
+#define TSS_HI(p) ((uint32_t)((uintptr_t)(p) >> 32))
+
+// a fault on an unusable stack triples. these four get their own.
+static char ist_stack[NCPU][NIST][ISTSTACKSIZE] __attribute__((aligned(16)));
+
+// kernel segment descriptors, tss and ist. once per cpu.
 void seginit(void) {
   struct cpu *c;
+  char (*ist)[ISTSTACKSIZE];
 
   // Configure Page Attribute Table (PAT):
   // PA0=WB(06), PA1=WC(01), PA2=UC-(07), PA3=UC(00)
@@ -116,7 +53,37 @@ void seginit(void) {
   c->gdt[SEG_KDATA] = SEG(STA_W, 0, 0xffffffff, 0);
   c->gdt[SEG_UCODE] = SEG(STA_X | STA_R, 0, 0xffffffff, DPL_USER);
   c->gdt[SEG_UDATA] = SEG(STA_W, 0, 0xffffffff, DPL_USER);
+  ist = ist_stack[cpuid()];
+  c->ts.ist1_31_0 = TSS_LO(ist[IST_DBLFLT - 1] + ISTSTACKSIZE);
+  c->ts.ist1_63_32 = TSS_HI(ist[IST_DBLFLT - 1] + ISTSTACKSIZE);
+  c->ts.ist2_31_0 = TSS_LO(ist[IST_NMI - 1] + ISTSTACKSIZE);
+  c->ts.ist2_63_32 = TSS_HI(ist[IST_NMI - 1] + ISTSTACKSIZE);
+  c->ts.ist3_31_0 = TSS_LO(ist[IST_MCHK - 1] + ISTSTACKSIZE);
+  c->ts.ist3_63_32 = TSS_HI(ist[IST_MCHK - 1] + ISTSTACKSIZE);
+  c->ts.ist4_31_0 = TSS_LO(ist[IST_DEBUG - 1] + ISTSTACKSIZE);
+  c->ts.ist4_63_32 = TSS_HI(ist[IST_DEBUG - 1] + ISTSTACKSIZE);
+  c->ts.iomb = (uint16_t)sizeof(c->ts);
+
   lgdt(c->gdt, sizeof(c->gdt));
+  // uefi hands the kernel cs 0x38, past the tss descriptor in our table,
+  // so the first iretq back into kernel code faults
+  __asm__ volatile("pushq %0\n\t"
+                   "leaq 1f(%%rip), %%rax\n\t"
+                   "pushq %%rax\n\t"
+                   "lretq\n"
+                   "1:\n\t"
+                   "movl %1, %%eax\n\t"
+                   "movl %%eax, %%ds\n\t"
+                   "movl %%eax, %%es\n\t"
+                   "movl %%eax, %%ss\n\t"
+                   "movl %%eax, %%fs\n\t"
+                   "movl %%eax, %%gs\n\t"
+                   :
+                   : "i"(SEG_KCODE << 3), "i"(SEG_KDATA << 3)
+                   : "rax", "memory");
+  *((struct tssdesc *)(&c->gdt[SEG_TSS])) =
+      TSSDESC64(STS_T64A, &c->ts, sizeof(c->ts) - 1, 0);
+  ltr(SEG_TSS << 3);
 }
 
 static uint ptx(const void *va, int level) {
@@ -130,47 +97,42 @@ static uint ptx(const void *va, int level) {
   case 1:
     return PTX1(va);
   default:
-    return -1;
+    panic("ptx: level");
   }
 }
 
 static pte_t *__attribute__((noinline))
-do_walk(pte_t *table, const void *va, int alloc, int level) {
-  if (level == 1) {
+do_walk(pte_t *table, const void *va, int alloc, int level, int stop) {
+  if (level == stop) {
     return &table[ptx(va, level)];
   }
 
   pte_t *next_table;
   pte_t *pte = &table[ptx(va, level)];
   if (*pte & PTE_P) {
+    if (*pte & PTE_PS)
+      return NULL;
     next_table = (pte_t *)P2V(PTE_ADDR(*pte));
   } else {
     if (!alloc || (next_table = (pte_t *)kalloc()) == 0) {
       return NULL;
     }
-    // Make sure all those PTE_P bits are zero.
     memset(next_table, 0, PGSIZE);
-    // The permissions here are overly generous, but they can
-    // be further restricted by the permissions in the page table
-    // entries, if necessary.
+    // generous here, the leaf entries narrow it
     *pte = V2P(next_table) | PTE_P | PTE_W | PTE_U;
   }
-  return do_walk(next_table, va, alloc, level - 1);
+  return do_walk(next_table, va, alloc, level - 1, stop);
 }
 
-// Return the address of the PTE in page table pgdir
-// that corresponds to virtual address va.  If alloc!=0,
-// create any required page table pages.
-static pte_t *__attribute__((noinline))
-walkpgdir(pte_t *pgdir, const void *va, int alloc) {
-  return do_walk(pgdir, va, alloc, 4);
+// the pte for va in pgdir. alloc!=0 builds the tables on the way down.
+static pte_t *__attribute__((noinline)) walkpgdir(pte_t *pgdir, const void *va,
+                                                  int alloc) {
+  return do_walk(pgdir, va, alloc, 4, 1);
 }
 
-// Create PTEs for virtual addresses starting at va that refer to
-// physical addresses starting at pa. va and size might not
-// be page-aligned.
-static int __attribute__((noinline))
-mappages(pte_t *pgdir, void *va, uint size, uintptr_t pa, int perm) {
+// map size bytes at va onto pa. neither need be page aligned.
+static int __attribute__((noinline)) mappages(pte_t *pgdir, void *va, uint size,
+                                              uintptr_t pa, int perm) {
   char *a, *last;
   pte_t *pte;
 
@@ -190,33 +152,112 @@ mappages(pte_t *pgdir, void *va, uint size, uintptr_t pa, int perm) {
   return 0;
 }
 
-// Set up kernel part of a page table.
+// map [pa, pa+size) at va with the largest pages that fit
+int map_range(pte_t *pgdir, uintptr_t va, uintptr_t pa, uint64_t size,
+              int perm) {
+  pte_t *e;
+
+  size = (size + PGSIZE - 1) & ~(uint64_t)(PGSIZE - 1);
+  while (size > 0) {
+    if (have_1g && ((va | pa) & (SIZE_1G - 1)) == 0 && size >= SIZE_1G) {
+      if ((e = do_walk(pgdir, (void *)va, 1, 4, 3)) == 0)
+        return -1;
+      *e = pa | perm | PTE_P | PTE_PS;
+      va += SIZE_1G, pa += SIZE_1G, size -= SIZE_1G;
+    } else if (((va | pa) & (SIZE_2M - 1)) == 0 && size >= SIZE_2M) {
+      if ((e = do_walk(pgdir, (void *)va, 1, 4, 2)) == 0)
+        return -1;
+      *e = pa | perm | PTE_P | PTE_PS;
+      va += SIZE_2M, pa += SIZE_2M, size -= SIZE_2M;
+    } else {
+      if ((e = do_walk(pgdir, (void *)va, 1, 4, 1)) == 0)
+        return -1;
+      *e = pa | perm | PTE_P;
+      va += PGSIZE, pa += PGSIZE, size -= PGSIZE;
+    }
+  }
+  return 0;
+}
+
+// user half private, kernel half shared at the top level
 pte_t *setupkvm(void) {
   pte_t *pgdir;
-  struct kmap *k;
+  int i;
 
   if ((pgdir = (pte_t *)kalloc()) == 0)
     return 0;
   memset(pgdir, 0, PGSIZE);
-  if (phys_top > DEVSPACE_PHYS) {
-    panic("PHYSTOP too high");
-  }
-  for (k = kmap; k < &kmap[nkmap]; k++) {
-    if (mappages(pgdir, k->virt, k->phys_end - k->phys_start,
-                 (uint)k->phys_start, k->perm) < 0) {
-      cprintf("setupkvm: mappages failed for 0x%p\n", k->virt);
-      freevm(pgdir, 0);
-      return 0;
-    }
-  }
+  for (i = NPTENTRIES / 2; i < NPTENTRIES; i++)
+    pgdir[i] = kpgdir[i];
   return pgdir;
 }
 
-// Allocate one page table for the machine for the kernel address
-// space for scheduler processes.
 void kvmalloc(void) {
-  init_kmap();
-  kpgdir = setupkvm();
+  uintptr_t kend = PGROUNDUP(V2P(end));
+
+  have_1g = cpu_has_1g();
+
+  if ((kpgdir = (pte_t *)kalloc()) == 0)
+    panic("kvmalloc: out of memory");
+  memset(kpgdir, 0, PGSIZE);
+
+  // spans of real memory only. a cacheable alias of an uncached device
+  // page is undefined.
+  {
+    const struct fnu_bootinfo *bi = bootinfo();
+    uint64_t lo, hi, done = 0;
+    uint n = 0, s;
+    int mapped = 0, ram;
+
+    while (n < bi->memranges) {
+      hi = bi->mem[n].base + bi->mem[n].length;
+      ram = 0;
+      lo = 0;
+
+      for (s = n; s < bi->memranges; s++) {
+        if (s > n && bi->mem[s].base > hi)
+          break;
+        if (bi->mem[s].base + bi->mem[s].length > hi)
+          hi = bi->mem[s].base + bi->mem[s].length;
+        // start at the first real memory, flash sits just below ram
+        if (!ram && bi->mem[s].type == FNU_MEM_RAM) {
+          ram = 1;
+          lo = bi->mem[s].base;
+        }
+      }
+      n = s;
+      if (!ram)
+        continue;
+
+      lo &= ~(SIZE_2M - 1);
+      hi = (hi + SIZE_2M - 1) & ~(SIZE_2M - 1);
+      if (hi > phys_map_top)
+        hi = phys_map_top;
+      // a large entry over an existing table would strand it
+      if (lo < done)
+        lo = done;
+      if (lo >= hi)
+        continue;
+      if (map_range(kpgdir, DMAP_BASE + lo, lo, hi - lo, PTE_W) < 0)
+        panic("kvmalloc: direct map");
+      cprintf("VM: map 0x%x .. 0x%x\n", lo, hi);
+      done = hi;
+      mapped = 1;
+    }
+    if (!mapped)
+      panic("kvmalloc: nothing to map");
+  }
+  if (map_range(kpgdir, KERNBASE, 0, EXTMEM, PTE_W) < 0 ||
+      map_range(kpgdir, KERNLINK, EXTMEM, V2P(data) - EXTMEM, 0) < 0 ||
+      map_range(kpgdir, (uintptr_t)data, V2P(data), kend - V2P(data), PTE_W) <
+          0)
+    panic("kvmalloc: kernel image");
+
+  // claim the ioremap top level entry now so later mappings reach every pgdir
+  if (do_walk(kpgdir, (void *)IOMAP_BASE, 1, 4, 3) == 0)
+    panic("kvmalloc: iomap");
+
+  cprintf("VM: direct map built with %s pages\n", have_1g ? "1G" : "2M");
   switchkvm();
 }
 
@@ -245,48 +286,48 @@ void switchuvm(struct proc *p) {
 
   // setting IOPL=0 in eflags *and* iomb beyond the tss segment limit
   // forbids I/O instructions (e.g., inb and outb) from user space
-  mycpu()->ts.iomb = (uint16_t)0;
+  mycpu()->ts.iomb = (uint16_t)sizeof(mycpu()->ts);
 
   ltr(SEG_TSS << 3);
   lcr3(V2P(p->pgdir)); // switch to process's address space
   popcli();
 }
 
-// Load the initcode into address 0 of pgdir.
-// sz must be less than a page.
+// load initcode at address 0. sz must be under a page.
 void inituvm(pte_t *pgdir, char *init, size_t sz) {
   char *mem;
 
   if (sz >= PGSIZE)
     panic("inituvm: more than a page");
-  mem = kalloc();
+  if ((mem = kalloc()) == 0)
+    panic("inituvm: out of memory");
   memset(mem, 0, PGSIZE);
   mappages(pgdir, 0, PGSIZE, V2P(mem), PTE_W | PTE_U);
   memmove(mem, init, sz);
 }
 
-// Load a program segment into pgdir.  addr must be page-aligned
-// and the pages from addr to addr+sz must already be mapped.
+// load one program segment. the pages it covers must already be mapped.
 int loaduvm(pte_t *pgdir, char *addr, struct inode *ip, uint offset,
             size_t sz) {
   size_t n;
   uintptr_t pa;
   pte_t *pte;
 
-  if (((uintptr_t)addr) % PGSIZE != 0) {
-    panic("loaduvm: addr must be page aligned");
-  }
-  for (size_t i = 0; i < sz; i += PGSIZE) {
-    if ((pte = walkpgdir(pgdir, addr + i, 0)) == 0) {
+  uintptr_t va, off;
+
+  // a segment need not start on a page boundary
+  for (size_t i = 0; i < sz; i += n) {
+    va = (uintptr_t)addr + i;
+    off = va % PGSIZE;
+    if ((pte = walkpgdir(pgdir, (char *)(va - off), 0)) == 0) {
       panic("loaduvm: address should exist");
     }
     pa = PTE_ADDR(*pte);
-    if (sz - i < PGSIZE) {
+    n = PGSIZE - off;
+    if (n > sz - i) {
       n = sz - i;
-    } else {
-      n = PGSIZE;
     }
-    if (readi(ip, P2V(pa), offset + i, n) != (int)n) {
+    if (readi(ip, (char *)P2V(pa) + off, offset + i, n) != (int)n) {
       return -1;
     }
   }
@@ -323,11 +364,8 @@ int allocuvm(pte_t *pgdir, size_t oldsz, size_t newsz) {
   return newsz;
 }
 
-// Deallocate user pages to bring the process size from oldsz to
-// newsz.  oldsz and newsz need not be page-aligned, nor does newsz
-// need to be less than oldsz.  oldsz can be larger than the actual
-// process size.  Returns the new process size.
-//
+// shrink the process to newsz. neither size need be page aligned, and
+// oldsz may be past the end. returns the new size.
 int deallocuvm(pte_t *pgdir, size_t oldsz, size_t newsz) {
   pte_t *pte;
   uintptr_t a, pa;
@@ -357,29 +395,27 @@ int deallocuvm(pte_t *pgdir, size_t oldsz, size_t newsz) {
   return newsz;
 }
 
-// This only free memory used for page tables because user pages are freed by
-// deallocuvm.
-void do_freevm(pte_t *table, int level) {
-  for (int i = 0; i < NPTENTRIES; i++) {
-    pte_t *ent = table + i;
-    if (*ent & PTE_P) {
-      if (level > 1) {
-        pte_t *next_table = (pte_t *)P2V(PTE_ADDR(*ent));
-        do_freevm(next_table, level - 1);
-      }
-    }
-  }
+// frees only the page tables of the user half, the kernel half is shared
+static void do_freevm(pte_t *table, int level) {
+  int i;
+
+  for (i = 0; i < NPTENTRIES; i++)
+    if ((table[i] & PTE_P) && level > 1 && !(table[i] & PTE_PS))
+      do_freevm((pte_t *)P2V(PTE_ADDR(table[i])), level - 1);
   kfree((char *)table);
 }
 
-// Free a page table and all the physical memory pages
-// in the user part.
 void freevm(pte_t *pgdir, uintptr_t utop) {
+  int i;
+
   if (pgdir == 0) {
     panic("freevm: no pgdir");
   }
   deallocuvm(pgdir, utop, 0);
-  do_freevm(pgdir, 4);
+  for (i = 0; i < NPTENTRIES / 2; i++)
+    if (pgdir[i] & PTE_P)
+      do_freevm((pte_t *)P2V(PTE_ADDR(pgdir[i])), 3);
+  kfree((char *)pgdir);
 }
 
 // Given a parent process's page table, create a copy
@@ -419,8 +455,7 @@ bad:
   return NULL;
 }
 
-// Clear PTE_U on a page. Used to create an inaccessible
-// page beneath the user stack.
+// clear PTE_U, for the dead page under the user stack
 void clearpteu(pte_t *pgdir, char *uva) {
   pte_t *pte;
 
@@ -436,16 +471,14 @@ char *uva2ka(pte_t *pgdir, char *uva) {
   pte_t *pte;
 
   pte = walkpgdir(pgdir, uva, 0);
-  if ((*pte & PTE_P) == 0)
+  if (pte == 0 || (*pte & PTE_P) == 0)
     return 0;
   if ((*pte & PTE_U) == 0)
     return 0;
   return (char *)P2V(PTE_ADDR(*pte));
 }
 
-// Copy len bytes from p to user address va in page table pgdir.
-// Most useful when pgdir is not the current page table.
-// uva2ka ensures this only works for PTE_U pages.
+// copy len bytes to user address va. uva2ka keeps it to PTE_U pages.
 int copyout(pte_t *pgdir, uintptr_t va, void *p, size_t len) {
   char *buf, *pa0;
   size_t n;
@@ -490,10 +523,26 @@ int copyin(pte_t *pgdir, void *p, uintptr_t va, size_t len) {
   return 0;
 }
 
-void *ioremap(uintptr_t phys_addr, uint size) {
-  (void)size;
-  if (phys_addr >= DEVSPACE_PHYS) {
-    return DEVSPACE_P2V(phys_addr);
-  }
-  return P2V(phys_addr);
+// runs before the cpu table exists, so no spinlock here
+static void *iomap(uint64_t pa, uint64_t size, int perm) {
+  uintptr_t off = pa & (PGSIZE - 1);
+  uint64_t len = PGROUNDUP(size + off);
+  uintptr_t va;
+
+  if (size == 0 || len > IOMAP_SIZE)
+    return 0;
+  va = __sync_fetch_and_add(&iomap_next, len);
+  if (va - IOMAP_BASE > IOMAP_SIZE - len)
+    panic("ioremap: window exhausted");
+  if (map_range(kpgdir, va, pa - off, len, perm) < 0)
+    return 0;
+  return (void *)(va + off);
+}
+
+void *ioremap(uint64_t pa, uint64_t size) {
+  return iomap(pa, size, PTE_W | PTE_PCD);
+}
+
+void *ioremap_wc(uint64_t pa, uint64_t size) {
+  return iomap(pa, size, PTE_W | PTE_PWT);
 }

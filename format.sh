@@ -1,12 +1,39 @@
-#!/bin/bash
+#!/bin/sh
+# clang-format over our own sources. the vendored trees stay as imported.
+set -eu
 
-set -eux
+sources() {
+	find boot kern inc lib user \( -name '*.h' -o -name '*.c' \) -print
+}
 
-# '-style=file' loads config from .clang-format
-CLANG_FORMAT_OPTIONS="-i -style=file"
+# crlf, lf, mixed or none
+eol() {
+	awk '{ if (substr($0, length($0)) == "\r") c++; else l++ }
+	     END { if (c && l) print "mixed"
+	           else if (c) print "crlf"
+	           else if (l) print "lf"
+	           else print "none" }' "$1"
+}
 
-# header files
-find -name '*.h' -exec clang-format $CLANG_FORMAT_OPTIONS {} \;
+skipped=
+rc=0
+for f in $(sources); do
+	before=$(eol "$f")
+	# clang-format would pick one ending and bury the real diff
+	if [ "$before" = mixed ]; then
+		skipped="$skipped $f"
+		continue
+	fi
+	clang-format -i -style=file "$f"
+	after=$(eol "$f")
+	if [ "$after" != "$before" ]; then
+		echo "format: $f: line endings $before -> $after" >&2
+		rc=1
+	fi
+done
 
-# c files
-find -name '*.c' -exec clang-format $CLANG_FORMAT_OPTIONS {} \;
+if [ -n "$skipped" ]; then
+	echo "format: skipped, mixed line endings:" >&2
+	for f in $skipped; do echo "	$f" >&2; done
+fi
+exit $rc

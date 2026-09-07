@@ -1,9 +1,13 @@
-#include "defs.h"
-#include "proc.h"
 #include "buf.h"
+#include "defs.h"
+#include "file.h"
 #include "fs.h"
-#include "ufs2.h"
 #include "inc/abi.h"
+#include "inc/stat.h"
+#include "inc/signal.h"
+#include "param.h"
+#include "proc.h"
+#include "ufs2.h"
 #include "x86.h"
 
 int64_t sys_info(void) {
@@ -18,24 +22,30 @@ int64_t sys_info(void) {
   return 0;
 }
 
-int64_t sys_reboot(void) {
+// reboot and poweroff ask init. halt(2) is what pulls the plug.
+static int64_t request_shutdown(int sig) {
   if (myproc()->uid != 0 && !auth_is_wheel(myproc()->uid))
     return -1;
-  cprintf("Rebooting...\n");
-  // Pulse the CPU reset line via the keyboard controller
-  uint8_t good = 0x02;
-  while (good & 0x02)
-    good = inb(0x64);
-  outb(0x64, 0xFE);
-  return 0; // Should not reach here
+  return kill(1, sig);
 }
 
-int64_t sys_poweroff(void) {
-  if (myproc()->uid != 0 && !auth_is_wheel(myproc()->uid))
+int64_t sys_reboot(void) { return request_shutdown(SIGINT); }
+
+int64_t sys_poweroff(void) { return request_shutdown(SIGUSR2); }
+
+int64_t sys_halt(void) {
+  struct proc *p = myproc();
+  int howto;
+
+  if (argint(0, &howto) < 0)
     return -1;
-  cprintf("Powering off...\n");
-  acpi_poweroff();
-  return 0;
+  if (p->uid != 0 && !auth_is_wheel(p->uid))
+    return -1;
+  // only init takes the machine down, unless somebody insists
+  if (p->pid != 1 && !(howto & FNU_RB_FORCE))
+    return -1;
+  system_halt(howto);
+  return -1;
 }
 
 int64_t sys_procinfo(void) {
@@ -103,22 +113,75 @@ int64_t sys_waitpid(void) {
   return waitpid(pid, flags & 1);
 }
 
+// root and wheel may signal anyone, anybody else only their own processes
+static int may_signal(pid_t pid) {
+  struct proc *p = myproc();
+  uint uid;
+
+  if (p->uid == 0 || auth_is_wheel(p->uid))
+    return 1;
+  if (pid < 0)
+    return 0;
+  return proc_uid_of(pid, &uid) == 0 && uid == p->uid;
+}
+
 int64_t sys_kill(void) {
   pid_t pid;
-  if (argint(0, &pid) < 0) {
+
+  if (argint(0, &pid) < 0 || !may_signal(pid))
     return -1;
-  }
-  return kill(pid);
+  return kill(pid, SIGKILL);
+}
+
+int64_t sys_signal(void) {
+  pid_t pid;
+  int sig;
+
+  if (argint(0, &pid) < 0 || argint(1, &sig) < 0 || !may_signal(pid))
+    return -1;
+  return kill(pid, sig);
+}
+
+int64_t sys_sigcatch(void) {
+  int mask;
+
+  if (argint(0, &mask) < 0)
+    return -1;
+  signal_catch((uint32_t)mask);
+  return 0;
+}
+
+int64_t sys_sigwait(void) {
+  struct siginfo *out;
+  struct siginfo si;
+  int block;
+
+  if (argptr(0, (char **)&out, sizeof(*out)) < 0 || argint(1, &block) < 0)
+    return -1;
+  if (signal_take(&si, block) < 0)
+    return -1;
+  if (copyout(myproc()->pgdir, (uintptr_t)out, &si, sizeof(si)) < 0)
+    return -1;
+  return 0;
 }
 
 int64_t sys_getpid(void) { return (int64_t)myproc()->pid; }
 
 int64_t sys_setforeground(void) {
+  struct proc *p = myproc();
+  struct file *f;
   pid_t pid;
+  int tty = -1;
 
   if (argint(0, &pid) < 0 || pid < 0)
     return -1;
-  console_set_foreground(pid);
+  // the job belongs to the terminal this process reads from, not to
+  // whichever one happens to be on screen
+  f = p->ofile[0];
+  if (f != 0 && f->type == FD_INODE && f->ip != 0 && f->ip->type == T_DEVICE &&
+      f->ip->major == CONSOLE)
+    tty = f->ip->minor;
+  console_set_foreground(tty, pid);
   return 0;
 }
 
@@ -160,8 +223,8 @@ int64_t sys_setuid(void) {
 int64_t sys_useradd(void) {
   char *name, *password;
   int wheel;
-  if (myproc()->uid != 0 || argstr(0, &name) < 0 ||
-      argstr(1, &password) < 0 || argint(2, &wheel) < 0)
+  if (myproc()->uid != 0 || argstr(0, &name) < 0 || argstr(1, &password) < 0 ||
+      argint(2, &wheel) < 0)
     return -1;
   return auth_add_user(name, password, wheel != 0);
 }
@@ -206,12 +269,12 @@ int64_t sys_sleep(void) {
 
   // interval of ticks is 10ms (in QEMU), so we have to count 100 ticks for 1
   // second.
-  n *= 100;
+  n *= HZ;
 
   acquire(&tickslock);
   ticks0 = ticks;
   while (ticks - ticks0 < n) {
-    if (myproc()->killed) {
+    if (proc_interrupted()) {
       release(&tickslock);
       return -1;
     }
@@ -228,21 +291,94 @@ int64_t sys_ping(void) {
   return proninx_lwip_ping(request);
 }
 int64_t sys_udp_open(void) { return proninx_udp_open(); }
-int64_t sys_udp_bind(void) { int h, p; return argint(0,&h)||argint(1,&p) ? -1 : proninx_udp_bind(h,p); }
-int64_t sys_udp_close(void) { int h; return argint(0,&h) ? -1 : proninx_udp_close(h); }
-int64_t sys_udp_sendto(void) { int h,n; char *b; struct network_endpoint *e; if (argint(0,&h)||argint(2,&n)||n<0||argptr(1,&b,n)||argptr(3,(char**)&e,sizeof(*e))) return -1; return proninx_udp_sendto(h,b,n,e); }
-int64_t sys_udp_recvfrom(void) { int h,n,t; char *b; struct network_endpoint *e; if (argint(0,&h)||argint(2,&n)||n<=0||argptr(1,&b,n)||argptr(3,(char**)&e,sizeof(*e))||argint(4,&t)||t<0) return -1; return proninx_udp_recvfrom(h,b,n,e,t); }
-int64_t sys_netinfo(void) { struct network_status *status; return argptr(0, (char **)&status, sizeof(*status)) < 0 ? -1 : proninx_lwip_status(status); }
-int64_t sys_netconfig(void) { struct network_ipv4_config *config; return argptr(0, (char **)&config, sizeof(*config)) < 0 ? -1 : proninx_lwip_configure(config); }
+int64_t sys_udp_bind(void) {
+  int h, p;
+  return argint(0, &h) || argint(1, &p) ? -1 : proninx_udp_bind(h, p);
+}
+int64_t sys_udp_close(void) {
+  int h;
+  return argint(0, &h) ? -1 : proninx_udp_close(h);
+}
+int64_t sys_udp_sendto(void) {
+  int h, n;
+  char *b;
+  struct network_endpoint *e;
+  if (argint(0, &h) || argint(2, &n) || n < 0 || argptr(1, &b, n) ||
+      argptr(3, (char **)&e, sizeof(*e)))
+    return -1;
+  return proninx_udp_sendto(h, b, n, e);
+}
+int64_t sys_udp_recvfrom(void) {
+  int h, n, t;
+  char *b;
+  struct network_endpoint *e;
+  if (argint(0, &h) || argint(2, &n) || n <= 0 || argptr(1, &b, n) ||
+      argptr(3, (char **)&e, sizeof(*e)) || argint(4, &t) || t < 0)
+    return -1;
+  return proninx_udp_recvfrom(h, b, n, e, t);
+}
+int64_t sys_netinfo(void) {
+  struct network_status *status;
+  return argptr(0, (char **)&status, sizeof(*status)) < 0
+             ? -1
+             : proninx_lwip_status(status);
+}
+int64_t sys_netconfig(void) {
+  struct network_ipv4_config *config;
+  return argptr(0, (char **)&config, sizeof(*config)) < 0
+             ? -1
+             : proninx_lwip_configure(config);
+}
 int64_t sys_tcp_open(void) { return proninx_tcp_open(); }
-int64_t sys_tcp_bind(void) { int h, p; return argint(0, &h) || argint(1, &p) || p < 1 || p > 65535 ? -1 : proninx_tcp_bind(h, p); }
-int64_t sys_tcp_listen(void) { int h; return argint(0, &h) ? -1 : proninx_tcp_listen(h); }
-int64_t sys_tcp_accept(void) { int h, timeout; return argint(0, &h) || argint(1, &timeout) || timeout < 0 ? -1 : proninx_tcp_accept(h, timeout); }
-int64_t sys_tcp_connect(void) { int h, timeout; struct network_endpoint *e; return argint(0, &h) || argptr(1, (char **)&e, sizeof(*e)) || argint(2, &timeout) || timeout < 0 ? -1 : proninx_tcp_connect(h, e, timeout); }
-int64_t sys_tcp_send(void) { int h, n; char *b; return argint(0, &h) || argint(2, &n) || n <= 0 || argptr(1, &b, n) ? -1 : proninx_tcp_send(h, b, n); }
-int64_t sys_tcp_recv(void) { int h, n, timeout; char *b; return argint(0, &h) || argint(2, &n) || n <= 0 || argptr(1, &b, n) || argint(3, &timeout) || timeout < 0 ? -1 : proninx_tcp_recv(h, b, n, timeout); }
-int64_t sys_tcp_close(void) { int h; return argint(0, &h) ? -1 : proninx_tcp_close(h); }
-int64_t sys_dns_resolve(void) { struct network_dns_request *request; return argptr(0, (char **)&request, sizeof(*request)) < 0 ? -1 : proninx_dns_resolve(request); }
+int64_t sys_tcp_bind(void) {
+  int h, p;
+  return argint(0, &h) || argint(1, &p) || p < 1 || p > 65535
+             ? -1
+             : proninx_tcp_bind(h, p);
+}
+int64_t sys_tcp_listen(void) {
+  int h;
+  return argint(0, &h) ? -1 : proninx_tcp_listen(h);
+}
+int64_t sys_tcp_accept(void) {
+  int h, timeout;
+  return argint(0, &h) || argint(1, &timeout) || timeout < 0
+             ? -1
+             : proninx_tcp_accept(h, timeout);
+}
+int64_t sys_tcp_connect(void) {
+  int h, timeout;
+  struct network_endpoint *e;
+  return argint(0, &h) || argptr(1, (char **)&e, sizeof(*e)) ||
+                 argint(2, &timeout) || timeout < 0
+             ? -1
+             : proninx_tcp_connect(h, e, timeout);
+}
+int64_t sys_tcp_send(void) {
+  int h, n;
+  char *b;
+  return argint(0, &h) || argint(2, &n) || n <= 0 || argptr(1, &b, n)
+             ? -1
+             : proninx_tcp_send(h, b, n);
+}
+int64_t sys_tcp_recv(void) {
+  int h, n, timeout;
+  char *b;
+  return argint(0, &h) || argint(2, &n) || n <= 0 || argptr(1, &b, n) ||
+                 argint(3, &timeout) || timeout < 0
+             ? -1
+             : proninx_tcp_recv(h, b, n, timeout);
+}
+int64_t sys_tcp_close(void) {
+  int h;
+  return argint(0, &h) ? -1 : proninx_tcp_close(h);
+}
+int64_t sys_dns_resolve(void) {
+  struct network_dns_request *request;
+  return argptr(0, (char **)&request, sizeof(*request)) < 0
+             ? -1
+             : proninx_dns_resolve(request);
+}
 
 /* ========================================================================== */
 /* FNU userland df syscall (fnudf utility)                                    */
@@ -274,7 +410,7 @@ static uint64_t native_count_free_blocks(uint dev, uint bstart, uint bend) {
 
   if (bend <= bstart)
     return 0;
-  for (b = bstart; b < bend; ) {
+  for (b = bstart; b < bend;) {
     bp = bread(dev, BBLOCK(b, sb));
     nbytes = BSIZE;
     start_within = b - BBLOCK(b, sb) * BPB;
@@ -293,9 +429,7 @@ static uint64_t native_count_free_blocks(uint dev, uint bstart, uint bend) {
   return free_bits;
 }
 
-int64_t
-sys_df(void)
-{
+int64_t sys_df(void) {
   struct df_stat *out;
   struct df_stat local[DF_ENTRIES_MAX];
   int capacity_arg, nout = 0;
@@ -306,7 +440,8 @@ sys_df(void)
 
   if (argptr(0, (char **)&out, DF_ENTRIES_MAX * sizeof(*out)) < 0)
     return -1;
-  if (argint(1, &capacity_arg) < 0 || capacity_arg < 1 || capacity_arg > (int)DF_ENTRIES_MAX)
+  if (argint(1, &capacity_arg) < 0 || capacity_arg < 1 ||
+      capacity_arg > (int)DF_ENTRIES_MAX)
     return -1;
 
   memset(local, 0, sizeof(local));
@@ -320,7 +455,8 @@ sys_df(void)
   local[nout].is_read_only = (uint8)fs_root_readonly();
 
   if (root_fs_type == FS_UFS2 && (vol = storage_ufs2_volume(rootdev)) != 0) {
-    uint64_t frags = (uint64)vol->fragments_per_group * (uint64)vol->cylinder_groups;
+    uint64_t frags =
+        (uint64)vol->fragments_per_group * (uint64)vol->cylinder_groups;
     data_bytes  = frags * (uint64)vol->fragment_size;
     data_used   = 0; /* approximated below via whole-volume heuristic */
     local[nout].total_bytes = data_bytes;
@@ -331,8 +467,9 @@ sys_df(void)
     /* Read the legacy xv6 superblock off rootdev and walk bitmap. */
     readsb(rootdev, &sbcopy);
     data_total = sbcopy.nblocks;
-    data_free  = native_count_free_blocks(rootdev, sbcopy.bmapstart * BPB,
-                                          sbcopy.bmapstart * BPB + sbcopy.nblocks);
+    data_free =
+        native_count_free_blocks(rootdev, sbcopy.bmapstart * BPB,
+                                 sbcopy.bmapstart * BPB + sbcopy.nblocks);
     data_free  = data_free > data_total ? data_total : data_free;
     data_bytes = sbcopy.size * (uint64)BSIZE;
     data_used  = (data_total - data_free) * (uint64)BSIZE;
@@ -353,10 +490,13 @@ sys_df(void)
   /* -------------------------------------------------------------
    * Entry 2: FNU Data volume (UFS2 device 2) if mounted.
    * ---------------------------------------------------------- */
-  if ((vol = storage_ufs2_volume(FNU_DATA_DEVICE)) != 0 && nout < DF_ENTRIES_MAX) {
-    uint64_t frags = (uint64)vol->fragments_per_group * (uint64)vol->cylinder_groups;
+  if ((vol = storage_ufs2_volume(FNU_DATA_DEVICE)) != 0 &&
+      nout < DF_ENTRIES_MAX) {
+    uint64_t frags =
+        (uint64)vol->fragments_per_group * (uint64)vol->cylinder_groups;
     safestrcpy(local[nout].label, "FNU Data", sizeof(local[nout].label));
-    safestrcpy(local[nout].mount_point, "/data", sizeof(local[nout].mount_point));
+    safestrcpy(local[nout].mount_point, "/data",
+               sizeof(local[nout].mount_point));
     local[nout].is_present  = 1;
     local[nout].is_read_only = 1;
     local[nout].total_bytes = frags * (uint64)vol->fragment_size;
@@ -382,7 +522,8 @@ sys_df(void)
   }
 
   p = myproc();
-  if (copyout(p->pgdir, (uintptr_t)out, local, DF_ENTRIES_MAX * sizeof(*out)) < 0)
+  if (copyout(p->pgdir, (uintptr_t)out, local, DF_ENTRIES_MAX * sizeof(*out)) <
+      0)
     return -1;
   return nout;
 }

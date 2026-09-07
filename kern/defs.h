@@ -13,6 +13,7 @@ struct ioapic;
 struct pipe;
 struct proc;
 struct sleeplock;
+struct siginfo;
 struct spinlock;
 struct stat;
 struct superblock;
@@ -26,6 +27,13 @@ struct network_status;
 struct network_ipv4_config;
 struct network_dns_request;
 struct user_info;
+
+struct fnu_bootinfo;
+
+// bootinfo.c
+void bootinfo_init(uint64_t phys);
+const struct fnu_bootinfo *bootinfo(void);
+void bootinfo_print(void);
 
 // bio.c
 void binit(void);
@@ -44,8 +52,8 @@ int ufs2_read_inode(const struct ufs2_volume *, uint, struct ufs2_inode *);
 int ufs2_read_direct(const struct ufs2_volume *, const struct ufs2_inode *,
                      uint, void *, uint);
 int ufs2_lookup(const struct ufs2_volume *, uint, const char *, uint *);
-int ufs2_read(const struct ufs2_volume *, const struct ufs2_inode *,
-              uint64_t, void *, uint);
+int ufs2_read(const struct ufs2_volume *, const struct ufs2_inode *, uint64_t,
+              void *, uint);
 int ufs2_readdir(const struct ufs2_volume *, uint, uint, uint *, char *, uint);
 
 // console.c
@@ -54,17 +62,19 @@ void consoleintr(int (*)(void));
 void cprintf(char *, ...);
 void panic(char *) __attribute__((noreturn));
 int consoleioctl(struct inode *, uint64_t, uint64_t);
-void console_set_foreground(pid_t pid);
+void console_set_foreground(int tty, pid_t pid);
 void console_flush(void);
+void console_drop_lock(void);
 void console_flush_if_dirty(void);
 
 // framebuffer.c
-uint32_t framebuffer_phys(void);
-uint framebuffer_size(void);
+uint64_t framebuffer_phys(void);
+uint64_t framebuffer_size(void);
+uint64_t framebuffer_vram(void);
 void *framebuffer_virt(void);
 int framebuffer_available(void);
 uint32_t framebuffer_boot_tag(void);
-uint32_t framebuffer_boot_physical_base(void);
+uint64_t framebuffer_boot_physical_base(void);
 uint framebuffer_boot_width(void);
 uint framebuffer_boot_height(void);
 uint framebuffer_boot_pitch(void);
@@ -72,6 +82,7 @@ uint framebuffer_boot_bits_per_pixel(void);
 int framebuffer_initialization_error(void);
 uint framebuffer_width(void);
 uint framebuffer_height(void);
+const char *framebuffer_font_name(void);
 uint framebuffer_columns(void);
 uint framebuffer_rows(void);
 void framebuffer_init(void);
@@ -83,11 +94,17 @@ void framebuffer_scroll_up(void);
 void framebuffer_scroll_lines(int, ushort);
 void framebuffer_clear(void);
 int framebuffer_has_dispi(void);
+const char *framebuffer_mode_source(void);
+uint framebuffer_mode_source_code(void);
 void framebuffer_init_gpu(void *, uint, uint, uint);
+void framebuffer_shadow_init(void);
 void console_switch_to_gpu(void);
 int display_set_resolution(uint w, uint h);
+int display_can_modeset(void);
 void display_get_resolution(uint *w, uint *h, uint *bpp);
-
+struct fb_modelist;
+int display_mode_list(struct fb_modelist *);
+void display_dump_modes(void);
 
 // fnustate.c
 void fnustateinit(void);
@@ -99,10 +116,12 @@ void driver_framework_init(void);
 int driver_attach_pci_devices(void);
 int driver_dispatch_irq(int irq);
 void driver_poll_all(void);
+void driver_shutdown_all(void);
+int driver_device_count(void);
+int driver_pci_function_count(void);
 void e1000_driver_init(void);
 void virtio_net_driver_init(void);
 int virtio_gpu_driver_init(void);
-
 
 // auth.c
 void auth_init(void);
@@ -119,7 +138,8 @@ void proninx_lwip_timers(void);
 int proninx_lwip_ping(struct network_ping_request *);
 int proninx_udp_open(void);
 int proninx_udp_bind(int, ushort);
-int proninx_udp_sendto(int, const void *, uint, const struct network_endpoint *);
+int proninx_udp_sendto(int, const void *, uint,
+                       const struct network_endpoint *);
 int proninx_udp_recvfrom(int, void *, uint, struct network_endpoint *, uint);
 int proninx_udp_close(int);
 void proninx_udp_process_exit(pid_t);
@@ -166,6 +186,7 @@ void iupdate(struct inode *);
 int namecmp(const char *, const char *);
 struct inode *namei(char *);
 struct inode *nameiparent(char *, char *);
+int inode_path(struct inode *, char *, uint);
 int readi(struct inode *, char *, uint, uint);
 void stati(struct inode *, struct stat *);
 int writei(struct inode *, char *, uint, uint);
@@ -177,11 +198,12 @@ int fat32_read_cluster(int dev, uint cluster, char *buf, uint n);
 int fat32_read(int dev, uint start_cluster, char *dst, uint off, uint n);
 int fat32_write(int dev, uint *start_cluster, char *src, uint off, uint n);
 void fat32_iupdate(struct inode *ip);
-uint fat32_lookup(int dev, uint dir_cluster, char *name, struct fat32_dirent *res, uint *off);
+uint fat32_lookup(int dev, uint dir_cluster, char *name,
+                  struct fat32_dirent *res, uint *off);
 int fat32_dirlink(struct inode *dp, char *name, struct inode *ip);
 int fat32_unlink(struct inode *dp, uint off);
 int fat32_isdirempty(struct inode *dp);
-struct inode* fat32_ialloc(uint dev, short type);
+struct inode *fat32_ialloc(uint dev, short type);
 
 // ramdisk.c
 void ramdisk_init(void);
@@ -236,13 +258,26 @@ void ioapicinit(void);
 // kbd.c
 void kbdintr(void);
 
+// hwinfo.c
+struct hwinfo;
+struct diskinfo;
+
 // lapic.c
 extern volatile uint32_t *lapic;
 void lapiceoi(void);
 int lapicid(void);
 void lapicinit(void);
+uint64_t lapic_timer_hz(void);
+uint32_t lapic_timer_reload(void);
+void lapic_halt_others(void);
+void lapic_halt_to(uchar apicid);
 void lapicstartap(uchar, uint32_t);
-void microdelay(int us);
+
+// delay.c
+void delay_init(void);
+void delay(uint us);
+void delay_ms(uint ms);
+uint64_t delay_tsc_hz(void);
 
 // log.c
 void initlog(int dev);
@@ -255,10 +290,14 @@ void end_op();
 char *kalloc(void);
 void kfree(char *);
 void kinit1(void *vstart);
-void kinit2();
+void kinit2(void);
 uint64_t get_total_ram(void);
 uint64_t get_free_ram(void);
 void *gpu_alloc_backing(uint32_t, uint64_t *);
+void vmem_setup(void);
+void *vmem_alloc(uint64_t bytes);
+void vmem_free(void *p);
+uint64_t vmem_capacity(void);
 
 // acpi.c
 int acpi_init(void);
@@ -266,7 +305,13 @@ void acpi_print_summary(void);
 void *acpi_find_table(const char *signature);
 int acpi_mp_init(void);
 void acpi_poweroff(void) __attribute__((noreturn));
-void acpi_reboot(void) __attribute__((noreturn));
+int acpi_reset_via_fadt(void);
+
+// shutdown.c
+void system_halt(int howto) __attribute__((noreturn));
+void system_halt_handoff(void);
+void system_poweroff(void) __attribute__((noreturn));
+void system_reboot(void) __attribute__((noreturn));
 
 // mp.c
 void mpinit(void);
@@ -275,6 +320,7 @@ void mpmain(void) __attribute__((noreturn));
 
 // picirq.c
 void picinit(void);
+int pic_spurious(int);
 
 // pipe.c
 int pipealloc(struct file **, struct file **);
@@ -299,7 +345,11 @@ void userinit(void);
 pid_t wait(void);
 pid_t waitpid(pid_t target, int nohang);
 void wakeup(void *chan);
-int kill(pid_t pid);
+int kill(pid_t pid, int sig);
+int proc_uid_of(pid_t pid, uint *uid);
+void signal_catch(uint32_t mask);
+int signal_take(struct siginfo *out, int block);
+int proc_interrupted(void);
 void yield(void);
 void pinit(void);
 int64_t get_nprocs(void);
@@ -339,8 +389,14 @@ void tvinit(void);
 extern uint ticks;
 extern struct spinlock tickslock;
 
+// mcheck.c
+void mcheck_init(void);
+void mcheck_report_boot(void);
+int mcheck_report(const char *);
+
 // uart.c
 void uartinit(void);
+void uartintr_enable(void);
 void uartintr(void);
 void uartputc(int);
 
@@ -359,7 +415,17 @@ void seginit(void);
 pte_t *setupkvm(void);
 void switchkvm(void);
 void switchuvm(struct proc *p);
-void *ioremap(uintptr_t, uint);
+int map_range(pte_t *, uintptr_t, uintptr_t, uint64_t, int);
+
+// efirt.c
+void efirt_init(void);
+int efirt_available(void);
+void efirt_report(void);
+int efirt_poweroff(void);
+int efirt_reboot(void);
+
+void *ioremap(uint64_t, uint64_t);
+void *ioremap_wc(uint64_t, uint64_t);
 
 // number of elements in fixed-size array
 #define NELEM(x) (sizeof(x) / sizeof((x)[0]))

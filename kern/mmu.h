@@ -6,6 +6,7 @@
 #define CR0_WP 0x00010000 // Write Protect
 #define CR0_PG 0x80000000 // Paging
 #define CR4_PAE 0x00000020 // Physical Address Extension
+#define CR4_MCE 0x00000040 // Machine Check Enable
 
 // Eflags register
 #define FL_IF 0x00000200 // Interrupt Enable
@@ -48,10 +49,19 @@ struct segdesc {
 
 // Normal segment
 #define SEG(type, base, lim, dpl)                                              \
-  (struct segdesc) {                                                           \
-    ((lim) >> 12) & 0xffff, (uint)(base)&0xffff, ((uint)(base) >> 16) & 0xff,  \
-        type, 1, dpl, 1, (uint)(lim) >> 28, 0, 1, 0, 1, (uint)(base) >> 24     \
-  }
+  (struct segdesc){((lim) >> 12) & 0xffff,                                     \
+                   (uint)(base) & 0xffff,                                      \
+                   ((uint)(base) >> 16) & 0xff,                                \
+                   type,                                                       \
+                   1,                                                          \
+                   dpl,                                                        \
+                   1,                                                          \
+                   (uint)(lim) >> 28,                                          \
+                   0,                                                          \
+                   1,                                                          \
+                   0,                                                          \
+                   1,                                                          \
+                   (uint)(base) >> 24}
 
 // TSS Descriptor
 // in x86-64, the size of TSS descriptor is 16 bytes, not 8.
@@ -77,13 +87,21 @@ struct tssdesc {
 };
 
 #define TSSDESC64(type, base, lim, dpl)                                        \
-  (struct tssdesc) {                                                           \
-    (lim) & 0xffff, (uint32_t)((uint64_t)(base)&0xffff),                       \
-        (uint32_t)(((uint64_t)(base) >> 16) & 0xff), type, 0, dpl, 1,          \
-        (uint32_t)(lim) >> 16, 0, 0, 0, 0,                                     \
-        (uint32_t)(((uint64_t)(base) >> 24) & 0xff),                           \
-        (uint32_t)((uint64_t)(base) >> 32), 0                                  \
-  }
+  (struct tssdesc){(lim) & 0xffff,                                             \
+                   (uint32_t)((uint64_t)(base) & 0xffff),                      \
+                   (uint32_t)(((uint64_t)(base) >> 16) & 0xff),                \
+                   type,                                                       \
+                   0,                                                          \
+                   dpl,                                                        \
+                   1,                                                          \
+                   (uint32_t)(lim) >> 16,                                      \
+                   0,                                                          \
+                   0,                                                          \
+                   0,                                                          \
+                   0,                                                          \
+                   (uint32_t)(((uint64_t)(base) >> 24) & 0xff),                \
+                   (uint32_t)((uint64_t)(base) >> 32),                         \
+                   0}
 
 #endif /* __ASSEMBLER__ */
 
@@ -123,13 +141,13 @@ struct tssdesc {
 #define PTE_P 0x001   // Present
 #define PTE_W 0x002   // Writeable
 #define PTE_U 0x004   // User
-#define PTE_PWT 0x008 // Page Write-Through / PAT Bit 0 (Write-Combining when PAT1=WC)
+#define PTE_PWT                                                                \
+  0x008 // Page Write-Through / PAT Bit 0 (Write-Combining when PAT1=WC)
 #define PTE_PCD 0x010 // Page Cache Disable
 #define PTE_PS 0x080  // Page Size
 
-
 // The page alighned physical address of the frame or the next page table
-#define PTE_FLAGS(pte) ((uintptr_t)(pte)&0xFFF)
+#define PTE_FLAGS(pte) ((uintptr_t)(pte) & 0xFFF)
 #define PTE_ADDR(pte) (((((uintptr_t)(pte)) >> 12) & 0xffffffffffff) << 12)
 
 #ifndef __ASSEMBLER__
@@ -196,7 +214,7 @@ struct gatedesc {
 //        this interrupt/trap gate explicitly using an int instruction.
 #define SETGATE(gate, istrap, sel, off, d)                                     \
   {                                                                            \
-    (gate).off_15_0 = (uint32_t)((off)&0xffff);                                \
+    (gate).off_15_0 = (uint32_t)((off) & 0xffff);                              \
     (gate).cs = (sel);                                                         \
     (gate).ist = 0;                                                            \
     (gate).args = 0;                                                           \

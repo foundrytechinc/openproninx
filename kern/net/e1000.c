@@ -40,7 +40,7 @@ static uint16_t e1000_read_eeprom(uint8_t addr) {
     uint32_t val = e1000_read32(E1000_EERD);
     if (val & (1U << 4))
       return (uint16_t)((val >> 16) & 0xffff);
-    microdelay(10);
+    delay(10);
   }
   return 0;
 }
@@ -184,9 +184,9 @@ static int e1000_attach(struct device *dev) {
   // Device reset
   e1000_write32(E1000_IMC, 0xffffffff);
   e1000_write32(E1000_CTRL, E1000_CTRL_RST);
-  microdelay(20);
+  delay(20);
   e1000_write32(E1000_CTRL, 0);
-  microdelay(20);
+  delay(20);
   e1000_write32(E1000_IMC, 0xffffffff);
 
   // Clear Multicast Table Array

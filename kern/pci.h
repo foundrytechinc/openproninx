@@ -66,10 +66,10 @@ struct pci_device {
   uint8_t  subclass;
   uint8_t  prog_if;
   uint16_t io_base;
-  uint32_t mmio_base;
-  uint32_t mmio_size;
-  uint32_t bar[6];
-  uint32_t bar_size[6];
+  uint64_t mmio_base;
+  uint64_t mmio_size;
+  uint64_t bar[6];      // a 64-bit bar is one entry; the pair's upper half is 0
+  uint64_t bar_size[6];
   uint8_t  bar_is_io[6];
 };
 
@@ -82,6 +82,7 @@ void     pci_write16(uint bus, uint dev, uint func, uint offset, uint16_t value)
 void     pci_write8(uint bus, uint dev, uint func, uint offset, uint8_t value);
 
 // Device Discovery & Control
+void pci_read_bars(uint bus, uint dev, uint func, struct pci_device *out);
 int  pci_find_device(uint16_t vendor_id, uint16_t device_id, struct pci_device *out);
 int  pci_find_device_by_class(uint8_t class_code, uint8_t subclass, uint8_t prog_if, struct pci_device *out);
 void pci_enable_bus_master(const struct pci_device *dev);

@@ -39,6 +39,61 @@ void pci_write8(uint bus, uint dev, uint func, uint offset, uint8_t value) {
   outb(PCI_CONFIG_DATA + (offset & 3), value);
 }
 
+// sizing a bar parks the aperture at the top of the address space, so
+// decode goes off first. a 64-bit bar is a pair: both halves written,
+// read and restored together, the second slot left empty.
+void pci_read_bars(uint bus, uint dev, uint func, struct pci_device *out) {
+  uint32_t cmd = pci_read32(bus, dev, func, PCI_REG_COMMAND);
+  int b;
+
+  pci_write32(bus, dev, func, PCI_REG_COMMAND, cmd & ~3u);
+  for (b = 0; b < 6; b++) {
+    uint offset = PCI_REG_BAR0 + b * 4;
+    uint32_t lo = pci_read32(bus, dev, func, offset);
+    uint32_t mask_lo, mask_hi = 0, hi = 0;
+    uint64_t base;
+    int wide = 0;
+
+    if (lo & 1) {
+      out->bar_is_io[b] = 1;
+      base = lo & ~3U;
+    } else {
+      out->bar_is_io[b] = 0;
+      base = lo & ~0xfU;
+      wide = (lo & 0x6) == 0x4;
+    }
+    if (wide) {
+      hi = pci_read32(bus, dev, func, offset + 4);
+      base |= (uint64_t)hi << 32;
+    }
+
+    pci_write32(bus, dev, func, offset, 0xffffffff);
+    if (wide)
+      pci_write32(bus, dev, func, offset + 4, 0xffffffff);
+    mask_lo = pci_read32(bus, dev, func, offset);
+    if (wide)
+      mask_hi = pci_read32(bus, dev, func, offset + 4);
+    pci_write32(bus, dev, func, offset, lo);
+    if (wide)
+      pci_write32(bus, dev, func, offset + 4, hi);
+
+    out->bar[b] = base;
+    if (wide) {
+      uint64_t m = ((((uint64_t)mask_hi << 32) | mask_lo) & ~(uint64_t)0xf);
+      out->bar_size[b] = m == 0 ? 0 : (~m) + 1;
+      if (++b >= 6)
+        break;
+      out->bar[b] = 0;
+      out->bar_size[b] = 0;
+      out->bar_is_io[b] = 0;
+    } else {
+      uint32_t m = mask_lo & ((lo & 1) ? ~3U : ~0xfU);
+      out->bar_size[b] = m == 0 ? 0 : (uint64_t)(~m) + 1;
+    }
+  }
+  pci_write32(bus, dev, func, PCI_REG_COMMAND, cmd);
+}
+
 static void pci_populate_device(uint bus, uint dev, uint func, uint16_t vendor,
                                 uint16_t device, struct pci_device *out) {
   if (!out)
@@ -54,25 +109,7 @@ static void pci_populate_device(uint bus, uint dev, uint func, uint16_t vendor,
   out->subclass = pci_read8(bus, dev, func, PCI_REG_SUBCLASS);
   out->prog_if = pci_read8(bus, dev, func, PCI_REG_PROG_IF);
 
-  for (int b = 0; b < 6; b++) {
-    uint offset = PCI_REG_BAR0 + b * 4;
-    uint32_t bar = pci_read32(bus, dev, func, offset);
-    if (bar & 1) {
-      out->bar_is_io[b] = 1;
-      out->bar[b] = bar & ~3U;
-      pci_write32(bus, dev, func, offset, 0xffffffff);
-      uint32_t mask = pci_read32(bus, dev, func, offset);
-      pci_write32(bus, dev, func, offset, bar);
-      out->bar_size[b] = (~(mask & ~3U)) + 1;
-    } else {
-      out->bar_is_io[b] = 0;
-      out->bar[b] = bar & ~0xfU;
-      pci_write32(bus, dev, func, offset, 0xffffffff);
-      uint32_t mask = pci_read32(bus, dev, func, offset);
-      pci_write32(bus, dev, func, offset, bar);
-      out->bar_size[b] = (~(mask & ~0xfU)) + 1;
-    }
-  }
+  pci_read_bars(bus, dev, func, out);
 
   // Set legacy fields based on BAR0
   if (out->bar_is_io[0]) {

@@ -141,11 +141,18 @@ struct acpi_fadt {
 
 #define ACPI_FADT_RESET_REG_SUP (1U << 10)
 
+#define ACPI_PM1_SCI_EN 0x0001
+#define ACPI_PM1_WAK_STS 0x8000
+#define ACPI_PM1_SLP_EN 0x2000
+#define ACPI_PM1_SLP_TYP_SHIFT 10
+#define ACPI_PM1_SLP_TYP_MASK 0x1c00
+
 int acpi_init(void);
+int acpi_reset_via_fadt(void);
+int acpi_reset_describe(uint32_t *space, uint64_t *address, uint32_t *value);
 void acpi_print_summary(void);
 void *acpi_find_table(const char *signature);
 int acpi_mp_init(void);
 void acpi_poweroff(void) __attribute__((noreturn));
-void acpi_reboot(void) __attribute__((noreturn));
 
 #endif /* PRONINX_ACPI_H */

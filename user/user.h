@@ -10,6 +10,7 @@
 #include "inc/string.h"
 #include "inc/types.h"
 #include "inc/abi.h"
+#include "inc/signal.h"
 
 // wrap functions which exist in stds, but have different signatures.
 #define STD_WRAP(f)                                                            \
@@ -28,6 +29,9 @@ int wait(void);
 int waitpid(pid_t pid, int flags);
 #define WNOHANG 1
 STD_WRAP(int kill(pid_t pid))
+STD_WRAP(int signal(pid_t pid, int sig))
+int sigcatch(uint32_t mask);
+int sigwait(struct siginfo *out, int block);
 // the last entry of argv should be NULL
 int exec(char *path, char **argv);
 int getpid(void);
@@ -47,6 +51,7 @@ int unlink(const char *pathname);
 int link(const char *oldpath, const char *newpath);
 STD_WRAP(int mkdir(const char *pathname))
 int chdir(const char *path);
+int getcwd(char *buf, int size);
 int getdents(int fd, struct linux_dirent64 *buf, int count);
 int ioctl(int fd, uint64_t cmd, uint64_t arg);
 int chmod(const char *path, int mode);
@@ -66,6 +71,9 @@ void free(void *ptr);
 int info(struct info *inf);
 int reboot(void);
 int poweroff(void);
+int halt(int howto);
+int hwinfo(struct hwinfo *hw);
+int diskinfo(struct diskinfo *buf, int capacity);
 int procinfo(struct procinfo *pi, int capacity);
 
 // Network Subsystem (lwIP slot-handle API)

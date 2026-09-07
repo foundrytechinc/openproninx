@@ -28,6 +28,10 @@ int kbdgetc(void) {
 
   shift |= shiftcode[data];
   shift ^= togglecode[data];
+  // ctrl+alt+F1..F4 switches terminal; F1..F4 are scancodes 0x3b..0x3e
+  if ((shift & (CTL | ALT)) == (CTL | ALT) && data >= 0x3b &&
+      data < 0x3b + KBD_VT_MAX)
+    return KBD_VT_BASE + (int)(data - 0x3b);
   c = charcode[shift & (CTL | SHIFT)][data];
   if (shift & CAPSLOCK) {
     if ('a' <= c && c <= 'z')

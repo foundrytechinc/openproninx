@@ -1,8 +1,10 @@
 #include "acpi.h"
 #include "defs.h"
+#include "inc/bootinfo.h"
 #include "memlayout.h"
 #include "mmu.h"
 #include "param.h"
+#include "pci.h"
 #include "proc.h"
 #include "x86.h"
 
@@ -37,6 +39,15 @@ static int acpi_checksum(const void *addr, int len) {
 
 // Search EBDA and BIOS read-only memory space for RSDP signature
 static struct rsdp_descriptor *acpi_find_rsdp(void) {
+  const struct fnu_bootinfo *bi = bootinfo();
+
+  if (bi && bi->acpi_rsdp != 0 && bi->acpi_rsdp < 0x100000000ULL) {
+    struct rsdp_descriptor *r =
+        (struct rsdp_descriptor *)P2V((uintptr_t)bi->acpi_rsdp);
+    if (memcmp(r->signature, "RSD PTR ", 8) == 0 && acpi_checksum(r, 20))
+      return r;
+  }
+
   // 1. Scan EBDA (Extended BIOS Data Area)
   uint16_t *bda = (uint16_t *)P2V(0x40E);
   uintptr_t ebda_phys = ((uintptr_t)(*bda)) << 4;
@@ -62,7 +73,7 @@ static struct rsdp_descriptor *acpi_find_rsdp(void) {
   return 0;
 }
 
-// Search DSDT AML byte stream for \_S5_ package to extract SLP_TYPa and SLP_TYPb
+// find the \_S5_ package in the dsdt aml
 static void acpi_parse_s5(void) {
   if (!acpi_state.fadt)
     return;
@@ -77,8 +88,8 @@ static void acpi_parse_s5(void) {
   if (dsdt_phys == 0)
     return;
 
-  struct acpi_sdt_header *dsdt_hdr =
-      (struct acpi_sdt_header *)ioremap(dsdt_phys, sizeof(struct acpi_sdt_header));
+  struct acpi_sdt_header *dsdt_hdr = (struct acpi_sdt_header *)ioremap(
+      dsdt_phys, sizeof(struct acpi_sdt_header));
   if (!dsdt_hdr || memcmp(dsdt_hdr->signature, "DSDT", 4) != 0)
     return;
 
@@ -155,8 +166,7 @@ int acpi_init(void) {
   if (rsdp->revision >= 2) {
     struct xsdp_descriptor *xsdp = (struct xsdp_descriptor *)rsdp;
     if (xsdp->length >= sizeof(struct xsdp_descriptor) &&
-        acpi_checksum(xsdp, xsdp->length) &&
-        xsdp->xsdt_address != 0) {
+        acpi_checksum(xsdp, xsdp->length) && xsdp->xsdt_address != 0) {
       acpi_state.is_xsdt = 1;
     }
   }
@@ -167,15 +177,16 @@ int acpi_init(void) {
 
   if (acpi_state.is_xsdt) {
     struct xsdp_descriptor *xsdp = (struct xsdp_descriptor *)rsdp;
-    struct acpi_sdt_header *xsdt_hdr =
-        (struct acpi_sdt_header *)ioremap(xsdp->xsdt_address, sizeof(struct acpi_sdt_header));
+    struct acpi_sdt_header *xsdt_hdr = (struct acpi_sdt_header *)ioremap(
+        xsdp->xsdt_address, sizeof(struct acpi_sdt_header));
     if (!xsdt_hdr || memcmp(xsdt_hdr->signature, "XSDT", 4) != 0) {
       cprintf("ACPI: invalid XSDT table\n");
       return -1;
     }
 
     uint32_t xsdt_len = xsdt_hdr->length;
-    struct acpi_sdt_header *xsdt = (struct acpi_sdt_header *)ioremap(xsdp->xsdt_address, xsdt_len);
+    struct acpi_sdt_header *xsdt =
+        (struct acpi_sdt_header *)ioremap(xsdp->xsdt_address, xsdt_len);
     if (!xsdt || !acpi_checksum(xsdt, xsdt_len)) {
       cprintf("ACPI: XSDT checksum failed\n");
       return -1;
@@ -184,13 +195,14 @@ int acpi_init(void) {
     int entries = (xsdt_len - sizeof(struct acpi_sdt_header)) / 8;
     uint64_t *table_ptrs = (uint64_t *)(xsdt + 1);
 
-    for (int i = 0; i < entries && acpi_state.table_count < ACPI_MAX_TABLES; i++) {
+    for (int i = 0; i < entries && acpi_state.table_count < ACPI_MAX_TABLES;
+         i++) {
       uint64_t table_phys = table_ptrs[i];
       if (table_phys == 0)
         continue;
 
-      struct acpi_sdt_header *hdr =
-          (struct acpi_sdt_header *)ioremap(table_phys, sizeof(struct acpi_sdt_header));
+      struct acpi_sdt_header *hdr = (struct acpi_sdt_header *)ioremap(
+          table_phys, sizeof(struct acpi_sdt_header));
       if (!hdr)
         continue;
 
@@ -209,15 +221,16 @@ int acpi_init(void) {
     }
   } else {
     uint32_t rsdt_phys = rsdp->rsdt_address;
-    struct acpi_sdt_header *rsdt_hdr =
-        (struct acpi_sdt_header *)ioremap(rsdt_phys, sizeof(struct acpi_sdt_header));
+    struct acpi_sdt_header *rsdt_hdr = (struct acpi_sdt_header *)ioremap(
+        rsdt_phys, sizeof(struct acpi_sdt_header));
     if (!rsdt_hdr || memcmp(rsdt_hdr->signature, "RSDT", 4) != 0) {
       cprintf("ACPI: invalid RSDT table\n");
       return -1;
     }
 
     uint32_t rsdt_len = rsdt_hdr->length;
-    struct acpi_sdt_header *rsdt = (struct acpi_sdt_header *)ioremap(rsdt_phys, rsdt_len);
+    struct acpi_sdt_header *rsdt =
+        (struct acpi_sdt_header *)ioremap(rsdt_phys, rsdt_len);
     if (!rsdt || !acpi_checksum(rsdt, rsdt_len)) {
       cprintf("ACPI: RSDT checksum failed\n");
       return -1;
@@ -226,13 +239,14 @@ int acpi_init(void) {
     int entries = (rsdt_len - sizeof(struct acpi_sdt_header)) / 4;
     uint32_t *table_ptrs = (uint32_t *)(rsdt + 1);
 
-    for (int i = 0; i < entries && acpi_state.table_count < ACPI_MAX_TABLES; i++) {
+    for (int i = 0; i < entries && acpi_state.table_count < ACPI_MAX_TABLES;
+         i++) {
       uint32_t table_phys = table_ptrs[i];
       if (table_phys == 0)
         continue;
 
-      struct acpi_sdt_header *hdr =
-          (struct acpi_sdt_header *)ioremap(table_phys, sizeof(struct acpi_sdt_header));
+      struct acpi_sdt_header *hdr = (struct acpi_sdt_header *)ioremap(
+          table_phys, sizeof(struct acpi_sdt_header));
       if (!hdr)
         continue;
 
@@ -252,8 +266,7 @@ int acpi_init(void) {
   }
 
   cprintf("ACPI: parsed %d description tables (MADT: %s, FADT: %s)\n",
-          acpi_state.table_count,
-          acpi_state.madt ? "present" : "missing",
+          acpi_state.table_count, acpi_state.madt ? "present" : "missing",
           acpi_state.fadt ? "present" : "missing");
 
   acpi_state.initialized = 1;
@@ -309,7 +322,7 @@ int acpi_mp_init(void) {
       struct madt_ioapic *io = (struct madt_ioapic *)p;
       if (ioapic == 0) {
         ioapicid = io->ioapic_id;
-        ioapic = (struct ioapic *)DEVSPACE_P2V((uintptr_t)io->ioapic_address);
+        ioapic = (struct ioapic *)ioremap(io->ioapic_address, 4096);
       }
       break;
     }
@@ -325,95 +338,143 @@ int acpi_mp_init(void) {
   if (ncpu == 0 || ioapic == 0 || lapic_phys == 0)
     return -1;
 
-  lapic = (uint32_t *)DEVSPACE_P2V(lapic_phys);
+  lapic = (uint32_t *)ioremap(lapic_phys, 4096);
 
   cprintf("ACPI: MADT configured %d CPUs, Local APIC at 0x%p, IOAPIC at 0x%p\n",
           ncpu, lapic, ioapic);
   return 0;
 }
 
-// Clean ACPI S5 Soft-off / Shutdown
-void acpi_poweroff(void) {
-  cprintf("ACPI: initiating system shutdown...\n");
+// acpi 6.5 sec 16.1. an armed gpe aborts the transition, and there is no
+// aml interpreter here for _PTS. OpenBSD acpi_powerdown disarms them too.
+static void acpi_disable_gpes(void) {
+  struct acpi_fadt *fadt = acpi_state.fadt;
+  uint i, half;
 
-  cli();
-
-  if (acpi_state.fadt) {
-    struct acpi_fadt *fadt = acpi_state.fadt;
-
-    // Enable ACPI mode via SMI command if disabled
-    if (fadt->smi_cmd && fadt->acpi_enable) {
-      outb((uint16_t)fadt->smi_cmd, fadt->acpi_enable);
-      for (int i = 0; i < 300; i++) {
-        if (fadt->pm1a_cnt_blk && (inw((uint16_t)fadt->pm1a_cnt_blk) & 1))
-          break;
-        microdelay(10000);
-      }
-    }
-
-    uint16_t slp_typa = acpi_state.s5_found ? acpi_state.slp_typa : 5;
-    uint16_t slp_typb = acpi_state.s5_found ? acpi_state.slp_typb : 5;
-
-    // Write SLP_EN (bit 13) | (SLP_TYP << 10)
-    if (fadt->pm1a_cnt_blk)
-      outw((uint16_t)fadt->pm1a_cnt_blk, (slp_typa << 10) | (1 << 13));
-    if (fadt->pm1b_cnt_blk)
-      outw((uint16_t)fadt->pm1b_cnt_blk, (slp_typb << 10) | (1 << 13));
+  if (fadt->gpe0_blk && fadt->gpe0_blk_len >= 2) {
+    half = fadt->gpe0_blk_len / 2;
+    for (i = 0; i < half; i++)
+      outb((uint16_t)(fadt->gpe0_blk + half + i), 0);
   }
-
-  // Hypervisor poweroff fallbacks
-  outw(0x604, 0x2000);  // QEMU modern / Bochs ACPI
-  outw(0xB004, 0x2000); // Older Bochs / QEMU
-  outw(0x4004, 0x3400); // VirtualBox
-
-  microdelay(100000);
-
-  cprintf("ACPI: poweroff complete. System halted.\n");
-  for (;;) {
-    hlt();
+  if (fadt->gpe1_blk && fadt->gpe1_blk_len >= 2) {
+    half = fadt->gpe1_blk_len / 2;
+    for (i = 0; i < half; i++)
+      outb((uint16_t)(fadt->gpe1_blk + half + i), 0);
   }
 }
 
-// Clean ACPI reset with hardware fallback to 8042 and triple fault
-void acpi_reboot(void) {
+// OpenBSD acpi_sleep_pm: clear the wake status, lay the sleep type down, then
+// set the enable bit in a second write
+static void acpi_sleep_write(uint32_t blk, uint16_t typ) {
+  uint16_t cnt;
+
+  if (blk == 0)
+    return;
+  cnt = inw((uint16_t)blk) & ~(ACPI_PM1_SLP_TYP_MASK | ACPI_PM1_SLP_EN);
+  cnt |= (uint16_t)(typ << ACPI_PM1_SLP_TYP_SHIFT);
+  outw((uint16_t)blk, cnt);
+  outw((uint16_t)blk, (uint16_t)(cnt | ACPI_PM1_SLP_EN));
+}
+
+void acpi_poweroff(void) {
+  struct acpi_fadt *fadt = acpi_state.fadt;
+  int i;
+
   cli();
 
-  // 1. Try ACPI Reset Register from FADT
-  if (acpi_state.fadt && (acpi_state.fadt->flags & ACPI_FADT_RESET_REG_SUP)) {
-    struct acpi_gas *rr = &acpi_state.fadt->reset_reg;
-    if (rr->address != 0) {
-      if (rr->address_space_id == 1) {
-        // System I/O
-        outb((uint16_t)rr->address, acpi_state.fadt->reset_value);
-      } else if (rr->address_space_id == 0) {
-        // System Memory
-        *(volatile uint8_t *)DEVSPACE_P2V((uintptr_t)rr->address) = acpi_state.fadt->reset_value;
-      }
-      microdelay(50000);
+  if (fadt == 0 || fadt->pm1a_cnt_blk == 0 || !acpi_state.s5_found) {
+    cprintf("ACPI: no S5 description, cannot power off\n");
+    for (;;)
+      hlt();
+  }
+
+  // ask the firmware to hand the hardware over
+  if (fadt->smi_cmd && fadt->acpi_enable &&
+      !(inw((uint16_t)fadt->pm1a_cnt_blk) & ACPI_PM1_SCI_EN)) {
+    outb((uint16_t)fadt->smi_cmd, fadt->acpi_enable);
+    for (i = 0; i < 100; i++) {
+      if (inw((uint16_t)fadt->pm1a_cnt_blk) & ACPI_PM1_SCI_EN)
+        break;
+      delay(5000);
     }
   }
 
-  // 2. Fallback to PS/2 Keyboard Controller 8042 pulse
-  uint8_t good = 0x02;
-  for (int i = 0; i < 10000; i++) {
-    good = inb(0x64);
-    if ((good & 0x02) == 0)
-      break;
-    microdelay(10);
-  }
-  outb(0x64, 0xFE);
-  microdelay(50000);
+  if (fadt->pm1a_evt_blk)
+    outw((uint16_t)fadt->pm1a_evt_blk, ACPI_PM1_WAK_STS);
+  if (fadt->pm1b_evt_blk)
+    outw((uint16_t)fadt->pm1b_evt_blk, ACPI_PM1_WAK_STS);
+  acpi_disable_gpes();
 
-  // 3. Fallback: Triple Fault (empty IDT + software interrupt)
-  struct {
-    uint16_t limit;
-    uint64_t base;
-  } __attribute__((packed)) null_idt = {0, 0};
-  asm volatile("lidt (%0); int $3" : : "r"(&null_idt));
+  acpi_sleep_write(fadt->pm1a_cnt_blk, acpi_state.slp_typa);
+  acpi_sleep_write(fadt->pm1b_cnt_blk, acpi_state.slp_typb);
 
-  for (;;) {
+  delay(1000000);
+  cprintf("ACPI: the firmware refused soft-off\n");
+  for (;;)
     hlt();
+}
+
+static void acpi_reset_register(void) {
+  struct acpi_gas *rr = &acpi_state.fadt->reset_reg;
+  uint8_t value = acpi_state.fadt->reset_value;
+
+  if (rr->address == 0)
+    return;
+
+  switch (rr->address_space_id) {
+  case 0: // system memory
+    *(volatile uint8_t *)ioremap(rr->address, 1) = value;
+    break;
+  case 1: // system i/o
+    outb((uint16_t)rr->address, value);
+    break;
+  case 2: { // pci configuration, segment and bus are zero by definition
+    uint dev = (uint)((rr->address >> 32) & 0xffff);
+    uint func = (uint)((rr->address >> 16) & 0xffff);
+    uint off = (uint)(rr->address & 0xffff);
+    uint32_t word = pci_read32(0, dev, func, off & ~3u);
+    uint shift = (off & 3) * 8;
+
+    word &= ~(0xffu << shift);
+    word |= (uint32_t)value << shift;
+    pci_write32(0, dev, func, off & ~3u, word);
+    break;
   }
+  default:
+    break;
+  }
+  delay(50000);
+}
+
+// the reset register arrived with FADT revision 2. Linux acpi_reboot()
+// checks that first; a revision 1 table ends before the field.
+static int fadt_has_reset(void) {
+  struct acpi_fadt *f = acpi_state.fadt;
+
+  return f != 0 && f->header.revision >= 2 &&
+         f->header.length >=
+             __builtin_offsetof(struct acpi_fadt, reset_value) + 1;
+}
+
+int acpi_reset_describe(uint32_t *space, uint64_t *address, uint32_t *value) {
+  if (!fadt_has_reset())
+    return -1;
+  *space = acpi_state.fadt->reset_reg.address_space_id;
+  *address = acpi_state.fadt->reset_reg.address;
+  *value = acpi_state.fadt->reset_value;
+  return (acpi_state.fadt->flags & ACPI_FADT_RESET_REG_SUP) ? 0 : 1;
+}
+
+// the FADT reset register, when the firmware says it has one
+int acpi_reset_via_fadt(void) {
+  if (!fadt_has_reset())
+    return -1;
+  if (!(acpi_state.fadt->flags & ACPI_FADT_RESET_REG_SUP))
+    return -1;
+  if (acpi_state.fadt->reset_reg.address == 0)
+    return -1;
+  acpi_reset_register();
+  return 0;
 }
 
 void acpi_print_summary(void) {
@@ -424,12 +485,24 @@ void acpi_print_summary(void) {
   char oem[7];
   memmove(oem, acpi_state.rsdp->oem_id, 6);
   oem[6] = '\0';
-  cprintf("ACPI: RSDP v%d (OEM '%s', %s), %d tables (MADT: %s, FADT: %s, S5: %s)\n",
-          acpi_state.rsdp->revision ? (acpi_state.rsdp->revision + 1) : 1,
-          oem,
-          acpi_state.is_xsdt ? "XSDT" : "RSDT",
-          acpi_state.table_count,
-          acpi_state.madt ? "yes" : "no",
-          acpi_state.fadt ? "yes" : "no",
+  {
+    static const char *space[] = {"memory", "io", "pci"};
+    uint32_t sp = 0, value = 0;
+    uint64_t address = 0;
+    int have = acpi_reset_describe(&sp, &address, &value);
+
+    if (have < 0)
+      cprintf("ACPI: FADT rev %u describes no reset register\n",
+              acpi_state.fadt ? (uint)acpi_state.fadt->header.revision : 0);
+    else
+      cprintf("ACPI: reset register %s, %s 0x%x, value 0x%x\n",
+              have == 0 ? "usable" : "present but not flagged",
+              sp < 3 ? space[sp] : "?", address, (uint64_t)value);
+  }
+  cprintf(
+      "ACPI: RSDP v%d (OEM '%s', %s), %d tables (MADT: %s, FADT: %s, S5: %s)\n",
+      acpi_state.rsdp->revision ? (acpi_state.rsdp->revision + 1) : 1, oem,
+      acpi_state.is_xsdt ? "XSDT" : "RSDT", acpi_state.table_count,
+      acpi_state.madt ? "yes" : "no", acpi_state.fadt ? "yes" : "no",
           acpi_state.s5_found ? "yes" : "no");
 }

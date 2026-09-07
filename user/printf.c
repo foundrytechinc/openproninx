@@ -55,8 +55,9 @@ static void printint(struct print_buf *pb, long long xx, int base, int sign) {
 static void printstr_width(struct print_buf *pb, const char *s,
                            int width, int left_justify) {
   int len = 0;
-  const char *p = s;
+  const char *p;
   if (!s) s = "(null)";
+  p = s;
   while (*p++) len++;
 
   if (!left_justify) {

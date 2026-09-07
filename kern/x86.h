@@ -84,13 +84,29 @@ static inline void cli(void) { __asm__ volatile("cli"); }
 static inline void sti(void) { __asm__ volatile("sti"); }
 
 static inline void lcr3(uintptr_t val) {
-  __asm__ volatile("movq %0,%%cr3" : : "r"(val));
+  __asm__ volatile("movq %0,%%cr3" : : "r"(val) : "memory");
+}
+
+static inline uintptr_t rcr3(void) {
+  uintptr_t val;
+  __asm__ volatile("movq %%cr3,%0" : "=r"(val));
+  return val;
 }
 
 static inline uintptr_t rcr2(void) {
   uintptr_t val;
   __asm__ volatile("movq %%cr2,%0" : "=r"(val));
   return val;
+}
+
+static inline uintptr_t rcr4(void) {
+  uintptr_t val;
+  __asm__ volatile("movq %%cr4,%0" : "=r"(val));
+  return val;
+}
+
+static inline void lcr4(uintptr_t val) {
+  __asm__ volatile("movq %0,%%cr4" : : "r"(val));
 }
 
 static inline uint xchg(volatile uint *addr, uint newval) {
@@ -120,9 +136,20 @@ static inline uint64_t rdmsr(uint32_t msr) {
   return ((uint64_t)high << 32) | low;
 }
 
-static inline void hlt(void) {
-  __asm__ volatile("hlt");
+static inline uint64_t rdtsc(void) {
+  uint32_t low, high;
+  __asm__ volatile("rdtsc" : "=a"(low), "=d"(high));
+  return ((uint64_t)high << 32) | low;
 }
+
+static inline void cpuid_count(uint32_t leaf, uint32_t sub, uint32_t *a,
+                               uint32_t *b, uint32_t *c, uint32_t *d) {
+  __asm__ volatile("cpuid"
+                   : "=a"(*a), "=b"(*b), "=c"(*c), "=d"(*d)
+                   : "a"(leaf), "c"(sub));
+}
+
+static inline void hlt(void) { __asm__ volatile("hlt"); }
 
 // Layout of the trap frame built on the stack by the
 // hardware and by trapasm.S, and passed to trap().

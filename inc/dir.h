@@ -3,12 +3,10 @@
 
 #include "inc/types.h"
 
-// Directory is a file containing a sequence of dirent structures.
-#define DIRSIZ 14
-// Fixed-width legacy fs.img directory entries remain 14 bytes. Variable-size
-// directory formats use this separate VFS pathname buffer.
-#define MAXNAMLEN 255
+#define DIRSIZ 14 // fs.img fixed-width name
+#define MAXNAMLEN 255 // vfs pathname buffer
 #define NAMEBUFSZ (MAXNAMLEN + 1)
+#define MAXPATHLEN 512
 
 struct dirent {
   ushort inum;

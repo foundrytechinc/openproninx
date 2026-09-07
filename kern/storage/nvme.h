@@ -45,6 +45,10 @@
 
 // CSTS register bits
 #define NVME_CSTS_RDY   (1U << 0)
+#define NVME_CC_SHN_MASK    (3U << 14) // Shutdown Notification
+#define NVME_CC_SHN_NORMAL  (1U << 14)
+#define NVME_CSTS_SHST_MASK (3U << 2)  // Shutdown Status
+#define NVME_CSTS_SHST_DONE (2U << 2)
 #define NVME_CSTS_CFS   (1U << 1)
 
 // 64-byte Submission Queue Entry

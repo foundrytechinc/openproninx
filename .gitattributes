@@ -1,0 +1,7 @@
+# the tree mixes crlf and lf on purpose. git converts nothing, ever.
+* -text
+
+*.img binary
+*.ufs binary
+*.pdf binary
+*.doc binary

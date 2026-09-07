@@ -21,6 +21,10 @@
 
 #define E0ESC (1 << 6)
 
+// ctrl+alt+F1..F4 ask for a virtual terminal, well clear of any character
+#define KBD_VT_BASE 0x200
+#define KBD_VT_MAX 4
+
 // Special keycodes
 #define KEY_HOME 0xE0
 #define KEY_END 0xE1
