@@ -17,10 +17,19 @@ Numbers, signatures, and semantics are **frozen**. Guaranteed backward compatibi
 | 5 | `fork` | `int fork(void)` | Clone process; returns 0 in child, child PID in parent |
 | 6 | `wait` | `int wait(void)` | Wait for any child; returns child PID |
 | 27 | `waitpid` | `int waitpid(pid_t pid, int flags)` | Wait for specific child; supports `WNOHANG` (1) |
-| 7 | `kill` | `int kill(pid_t pid)` | Send SIGKILL to process |
+| 7 | `kill` | `int kill(pid_t pid)` | Send SIGKILL to process; root & wheel can signal any process, ordinary users only own UID |
 | 8 | `exec` | `int exec(char *path, char **argv)` | Replace process image; last argv must be NULL |
 | 25 | `getpid` | `int getpid(void)` | Return current process ID |
-| 26 | `sleep` | `int sleep(int seconds)` | Sleep for *n* seconds (100 ticks/sec in QEMU) |
+| 26 | `sleep` | `int sleep(int seconds)` | Sleep for *n* seconds (calibrated via kernel `HZ`) |
+
+### Signals & Machine State
+
+| # | Name | Userland signature | Notes |
+|---|------|--------------------|-------|
+| 58 | `signal` | `int signal(pid_t pid, int sig)` | Send signal (`SIGHUP`, `SIGINT`, `SIGKILL`, `SIGTERM`, `SIGUSR1`, `SIGUSR2`); pid `-1` broadcasts |
+| 59 | `sigcatch` | `int sigcatch(uint32_t mask)` | Register signal mask to intercept and catch in userland |
+| 60 | `sigwait` | `int sigwait(struct siginfo *out, int block)` | Retrieve pending signal with PCATCH semantics |
+| 61 | `halt` | `int halt(int howto)` | Request system shutdown (`FNU_RB_HALT`, `FNU_RB_POWEROFF`, `FNU_RB_REBOOT`, `FNU_RB_FORCE`) |
 
 ### File System & I/O
 
@@ -32,14 +41,15 @@ Numbers, signatures, and semantics are **frozen**. Guaranteed backward compatibi
 | 4 | `close` | `int close(int fd)` | Close file descriptor |
 | 12 | `stat` | `int stat(int fd, struct stat *buf)` | Get file metadata by fd |
 | 13 | `pipe` | `int pipe(int pipefd[2])` | Create unidirectional pipe |
-| 17 | `ioctl` | `int ioctl(int fd, uint64_t cmd, uint64_t arg)` | Terminal/framebuffer control: `TCGETS`/`TCSETS`, `FBIOGET_VSCREENINFO`/`FBIOPUT_VSCREENINFO` |
+| 17 | `ioctl` | `int ioctl(int fd, uint64_t cmd, uint64_t arg)` | Terminal/framebuffer control: `TCGETS`/`TCSETS`, `FBIOGET_VSCREENINFO`/`FBIOPUT_VSCREENINFO`, `FBIOGET_MODELIST`/`FBIODUMPMODES` |
 | 18 | `getdents` | `int getdents(int fd, struct linux_dirent64 *buf, int count)` | Read directory entries |
 | 19 | `link` | `int link(const char *old, const char *new)` | Create hard link |
 | 20 | `mkdir` | `int mkdir(const char *path)` | Create directory |
 | 21 | `unlink` | `int unlink(const char *path)` | Remove file or empty directory |
 | 22 | `dup` | `int dup(int oldfd)` | Duplicate file descriptor |
-| 23 | `mknod` | `int mknod(const char *path, int major, int minor)` | Create device node |
+| 23 | `mknod` | `int mknod(const char *path, int major, int minor)` | Create device node (supports `/dev/ttyN`, `/dev/console`, etc.) |
 | 24 | `chdir` | `int chdir(const char *path)` | Change current directory |
+| 64 | `getcwd` | `int getcwd(char *buf, int size)` | Get absolute path of current working directory |
 | 53 | `chmod` | `int chmod(const char *path, int mode)` | Change permission bits (octal `07777`); owner or root only |
 | 54 | `chown` | `int chown(const char *path, int uid, int gid)` | Change file owner/group; root only |
 
@@ -59,14 +69,16 @@ Numbers, signatures, and semantics are **frozen**. Guaranteed backward compatibi
 | 10 | `malloc` | `void *malloc(size_t size)` | Kernel-assisted heap allocation (grows address space) |
 | 11 | `free` | `void free(void *ptr)` | No-op; preserved for ABI compatibility |
 
-### System Information & Machine Control
+### System Information & Hardware Inventory
 
 | # | Name | Userland signature | Notes |
 |---|------|--------------------|-------|
 | 14 | `info` | `int info(struct info *buf)` | Fill `struct info` with uptime, RAM stats, process count |
-| 15 | `reboot` | `int reboot(void)` | Pulse CPU reset via keyboard controller; root / wheel only |
+| 15 | `reboot` | `int reboot(void)` | System reboot via `init` ladder (or keyboard/ACPI/EFI reset) |
 | 16 | `procinfo` | `int procinfo(struct procinfo *buf, int capacity)` | Fill array of `struct procinfo`; returns count |
-| 55 | `poweroff` | `int poweroff(void)` | ACPI shutdown; root / wheel only |
+| 55 | `poweroff` | `int poweroff(void)` | ACPI/EFI shutdown via `init` ladder |
+| 62 | `hwinfo` | `int hwinfo(struct hwinfo *buf)` | Fill hardware inventory: CPU brand, cores, frequencies, VRAM, PCI stats |
+| 63 | `diskinfo` | `int diskinfo(struct diskinfo *buf, int capacity)` | Fill block device info: model, serial, sector size, SATA/NVMe kind, sectors |
 
 ### Network Subsystem (lwIP slot-handle API)
 
@@ -104,7 +116,7 @@ Numbers, signatures, and semantics are **frozen**. Guaranteed backward compatibi
 |---|------|--------------------|-------|
 | 57 | `df` | `int df(struct df_stat *buf)` | Fill up to `DF_ENTRIES_MAX` (4) entries; returns count |
 
-### Stable ABI Data Structures (`inc/abi.h`)
+### Stable ABI Data Structures (`inc/abi.h` & `inc/signal.h`)
 
 ```c
 struct info        { uint64 uptime; uint64 total_ram; uint64 free_ram; uint32 nprocs; };
@@ -114,6 +126,7 @@ struct linux_dirent64 { uint64 d_ino; int64 d_off; unsigned short d_reclen;
 struct termios     { uint32 c_iflag; uint32 c_oflag; uint32 c_cflag; uint32 c_lflag;
                      uint8 c_line; uint8 c_cc[19]; };
 struct fb_var_screeninfo { uint32 xres; uint32 yres; uint32 bits_per_pixel; };
+struct fb_modelist { uint32 count; struct { uint16 width, height, bpp; } mode[96]; };
 
 struct network_ping_request { uint8 address[4]; uint32 timeout_ms; uint32 round_trip_ms; };
 struct network_endpoint     { uint8 address[4]; uint16 port; };
@@ -132,6 +145,27 @@ struct rtctime { uint8 sec; uint8 min; uint8 hour; uint8 wday;
 struct df_stat { char label[24]; char mount_point[32];
                  uint64 total_bytes; uint64 used_bytes; uint64 free_bytes;
                  uint8 is_read_only; uint8 is_present; uint8 _pad[6]; };
+
+struct hwinfo {
+  char     cpu_brand[49];
+  char     cpu_vendor[13];
+  uint8    pad0[2];
+  uint32   cpu_count, cpu_family, cpu_model, cpu_stepping;
+  uint64   tsc_hz, cpu_base_hz, cpu_max_hz;
+  uint32   fb_width, fb_height, fb_bpp, fb_columns, fb_rows;
+  uint32   pci_devices, pci_total, fb_modeset, fb_source, pad1;
+  uint64   fb_vram, ram_total, ram_free;
+};
+
+struct diskinfo {
+  char     model[41];
+  char     serial[21];
+  uint8    kind, pad0[1];
+  uint32   sector_size, link_gen, pad1;
+  uint64   sectors;
+};
+
+struct siginfo { int32_t signo; int32_t reserved; pid_t sender; };
 ```
 
 ---
@@ -158,7 +192,7 @@ These syscalls are **fully functional** but their numbers, signatures, or struct
 
 ```
  0  exit          1  read          2  write         3  open
- 4  close         5  fork          6  wait           7  kill
+ 4  close         5  fork          6  wait          7  kill
  8  exec          9  sbrk         10  malloc        11  free
 12  stat         13  pipe         14  info          15  reboot
 16  procinfo     17  ioctl        18  getdents      19  link
@@ -171,11 +205,14 @@ These syscalls are **fully functional** but their numbers, signatures, or struct
 44  dns_resolve  45  getuid       46* login         47* doas_auth
 48  setuid       49* useradd      50* passwd        51* users
 52  setforeground 53 chmod        54  chown         55  poweroff
-56  rtctime      57  df
+56  rtctime      57  df           58  signal        59  sigcatch
+60  sigwait      61  halt         62  hwinfo        63  diskinfo
+64  getcwd
 ```
 
-> `*` = EXPERIMENTAL (Tier 2). All other numbers are **Stable Core ABI** (Tier 1).
+> Total syscall count: **65** (`PRONINX_SYSCALL_COUNT`).  
+> `*` = EXPERIMENTAL (Tier 2, 5 syscalls). All other 60 syscalls are **Stable Core ABI** (Tier 1).
 
 ---
 
-*See also: [`inc/syscall.h`](../inc/syscall.h) (definitive table), [`inc/abi.h`](../inc/abi.h) (stable ABI data structures).*
+*See also: [`inc/syscall.h`](../inc/syscall.h) (definitive table), [`inc/abi.h`](../inc/abi.h) (stable ABI data structures), [`inc/signal.h`](../inc/signal.h) (signal definitions).*

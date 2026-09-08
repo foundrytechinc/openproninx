@@ -1,47 +1,56 @@
 # Video and Framebuffer Console
 
-OpenProninx provides a high-performance kernel text console rendered into a VBE linear framebuffer for BIOS/QEMU boot paths.
+OpenProninx provides a high-performance kernel text console rendered into a linear framebuffer across both BIOS and UEFI boot paths, supporting multiple color depths, dynamic OpenBSD Spleen fonts, virtual terminals, and runtime mode switching.
 
-## Boot Architecture
-1. `boot/video.S` invokes BIOS VBE 2.0+ services (`int 0x10`) while the CPU is in 16-bit real mode.
-2. It selects the highest-resolution direct-color linear framebuffer mode within `VBE_MAX_WIDTH` and `VBE_MAX_HEIGHT` (e.g. 1024x768x32, 1280x1024x32, or 1920x1080x32 direct RGB).
-3. Mode metadata (physical address, dimensions, pitch, bpp) and the BIOS 8x16 font table are stored at physical address `0x900` (`struct boot_framebuffer_info`).
-4. If VBE is unavailable, the kernel cleanly falls back to legacy 80x25 VGA text mode at `0xb8000`.
+## Boot & Display Architecture
+
+1. **BIOS Boot Path:**
+   - BIOS stage2 `video.c` uses VBE 2.0+ (`int 0x10`) and EDID queries to discover native panel resolutions.
+   - `coreboot.c` provides direct framebuffer and hardware data extraction on coreboot, libreboot, and GNUboot payloads.
+2. **UEFI Boot Path:**
+   - `boot/uefi` initializes the UEFI Graphics Output Protocol (GOP), records the physical framebuffer aperture, dimensions, stride, and pixel format into `bootinfo`.
+3. **Format & Aperture Support:**
+   - 64-bit physical framebuffer aperture mapping via `ioremap_wc()` into kernel `IOMAP`.
+   - Native rendering support for **15 bpp, 16 bpp (RGB565), 24 bpp (RGB888), and 32 bpp (ARGB8888)** color layouts.
+
+---
+
+## Virtual Terminals (VTs) & Device Nodes
+
+- **4 Virtual Terminals:** The kernel maintains 4 independent virtual terminals (`struct vt`).
+- **VT Switching:** Switch active terminals instantaneously using **`CTRL + ALT + F1`** through **`CTRL + ALT + F4`**. Scancodes `0x3b..0x3e` are translated in `kern/kbd.c` into `KBD_VT_BASE+n` (0x200), preventing any conflict with text characters.
+- **Device Node Mapping:**
+  - `/dev/tty1`, `/dev/tty2`, `/dev/tty3`, `/dev/tty4` are assigned to each specific virtual terminal.
+  - `/dev/console` dynamically follows the currently active foreground terminal.
+
+---
+
+## Typography & Dynamic Spleen Fonts
+
+OpenProninx imports four typeface sizes from the OpenBSD **Spleen** font family (`kern/font.c`, `kern/font.h`):
+- **Spleen 5x8**, **8x16**, **12x24**, and **16x32**.
+- The font size is dynamically selected at boot and mode switch based on screen width (matching OpenBSD `rasops` behavior) to preserve ideal terminal column counts (80–160 columns) across low-res VGA to 4K displays.
+
+---
 
 ## High-Performance Rendering & Zero-Lag Architecture
 
 ### 1. Page Attribute Table (PAT) & Write-Combining (WC)
-Video RAM access over PCIe / hypervisor MMIO is sensitive to memory access patterns. In `kern/vm.c`, the kernel configures the CPU's `IA32_PAT` MSR (`0x277`) to map PA1 to Write-Combining (`0x01`). The framebuffer virtual memory region is mapped with `PTE_W | PTE_PWT`.
-- Writes to VRAM coalesce into 64-byte burst PCI transactions.
-- Hypervisor and bus overhead is minimized.
+In `kern/vm.c`, the kernel configures `IA32_PAT` MSR (`0x277`) to map PA1 to Write-Combining (`0x01`). The framebuffer virtual memory region is mapped via `ioremap_wc()`. Writes to VRAM coalesce into 64-byte burst PCIe transactions.
 
-### 2. Scanline-Linear Sequential Streaming
-Earlier implementations drew text glyph-by-glyph, causing up to 98,000 non-contiguous 4KB memory jumps per screen redraw. 
-`framebuffer_draw_row()` streams pixel data strictly scanline-by-scanline:
-- Each scanline of a character row writes 1024 dwords (4096 bytes) in contiguous physical memory order.
-- CPU Write-Combining buffers burst continuously at full bus throughput.
+### 2. RAM Shadow Buffer & Dirty Span Tracking
+Physical video memory is strictly **write-only** to prevent hypervisor VM-Exit traps and bus wait states on read.
+- `kern/framebuffer.c` maintains a primary RAM shadow buffer.
+- Screen updates track dirty spans (bounding boxes of modified text cells), streaming only modified rectangular regions directly to VRAM in contiguous scanlines.
 
-### 3. Differential Row Tracking & RAM Shadow Buffer
-Physical video memory is strictly **write-only** to prevent hypervisor VM-Exit traps on read.
-- `kern/console.c` maintains a primary shadow text buffer (`crt_shadow`) in RAM.
-- `kern/framebuffer.c` maintains a secondary rendered cache (`rendered_cells`).
-- On console flushes, `framebuffer_flush_cells()` performs an L1 cache `memcmp` per row (~100 ns total) and only streams changed rows to VRAM. Static rows generate 0 VRAM traffic.
+### 3. Runtime Video Mode Switching (Long Mode Real-Mode Thunk)
+On BIOS systems, the kernel can switch video modes without rebooting:
+- `kern/rmtramp.S`, `kern/realmode.c`, and `kern/vesa.c` implement a long-mode to 16-bit real-mode thunk (inspired by the 9front architecture).
+- Userland can query available display modes via `ioctl(fd, FBIOGET_MODELIST, &modelist)` and inspect or switch modes using the `fbset` utility.
 
-### 4. Zero-Copy Hardware Panning & Fast Scroll Architecture
-Earlier implementations left `framebuffer_scroll_up()` empty, causing every scroll event to trigger a full re-rasterization of all 48 rows (6,144 glyphs, 3.14 MB of VRAM writes per line scrolled).
-OpenProninx solves this with a multi-tiered acceleration pipeline:
-- **Bochs VBE DISPI Hardware Panning**: When DISPI is detected (standard in QEMU, Bochs, VirtualBox), the kernel maps up to 16 MB of VRAM with Write-Combining and sets `VBE_DISPI_INDEX_VIRT_HEIGHT`. Scrolling shifts the hardware CRTC start address (`VBE_DISPI_INDEX_Y_OFFSET`) with **zero pixel memory copies**.
-- **Differential Scroll Tracking (`console_pending_scrolls`)**: `cgaputc()` batches scroll counts in RAM. When `console_flush()` runs, `framebuffer_scroll_lines()` scrolls the hardware viewport or VRAM once and shifts the RAM `rendered_cells` cache.
-- **Row Cache Alignment & Trailing Space Skipping**: Because `rendered_cells` shifts along with the scroll, rows `0..rows-1-n` match `crt_shadow` in RAM cache (`memcmp == 0`). Furthermore, the newly exposed bottom row in `rendered_cells` is initialized to the blank cell (`' ' | ansi_attr`), so `framebuffer_flush_cells()` matches and completely skips trailing empty columns. Only the actual characters printed on the new line are rendered, reducing writes by up to 99%.
-- **Branch-Free 4-Entry LUT & L1 Scanline Buffer**: Scanlines are generated in an L1 cached static buffer (`scanline_buf64`) using a 4-entry 64-bit lookup table per cell for 2-pixel bit pairs. This eliminates all conditional branches and bit shifting in the rasterization inner loop, streaming directly to VRAM in contiguous 64-bit stores.
-- **Zero-Overhead Hardware Panning**: The entire 16 MB virtual buffer is zeroed at boot, eliminating redundant `memset` clearing of VRAM during panning. Scrolling is purely an I/O port register write and RAM shift, achieving sustained rendering speeds over 2,000 lines/second.
-- **Software Fallback**: On non-DISPI firmware, `framebuffer_scroll_lines()` uses a 64-bit contiguous scanline shift in VRAM and still restricts glyph rendering strictly to the new line.
-
-### 5. Console Write Batching
-`cprintf()`, `consolewrite()`, and `consoleintr()` batch multiple character writes and issue a single consolidated `console_flush()` at the completion of output operations, eliminating repetitive redraws during command execution and scrolling.
+---
 
 ## Boundaries & Limitations
-- The framebuffer is kernel-private for text console output.
-- No userspace `/dev/fb` or accelerated 2D/3D graphics APIs are exposed.
-- Standard input/output flows through standard Unix streams (`stdin`/`stdout`/`stderr`) and ANSI escape sequences.
+- The framebuffer is kernel-managed for text virtual terminals and console output.
+- No userspace accelerated 3D graphics APIs (OpenGL/Vulkan) are present. Standard terminal I/O flows through standard Unix streams (`stdin`/`stdout`/`stderr`) and ANSI escape sequences.
 

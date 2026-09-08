@@ -46,8 +46,8 @@ struct device {
   struct pci_device pci;            // PCI configuration metadata (if on PCI)
   int irq;                          // Assigned interrupt line
   void *mmio_vaddr;                 // Kernel virtual address for MMIO registers
-  uint32_t mmio_paddr;              // Physical base address of MMIO space
-  uint32_t mmio_size;               // Size of MMIO window in bytes
+  uint64_t mmio_paddr;              // Physical base address of MMIO space (64-bit)
+  uint64_t mmio_size;               // Size of MMIO window in bytes (64-bit)
   uint16_t io_base;                 // Base I/O port (for Port-mapped I/O)
   int active;                       // Activation flag (1 = operational)
 };
@@ -66,48 +66,48 @@ flowchart TD
     C --> D[Device Discovery on Bus/Dev/Func]
     D --> E[Probe: drv->probe dev]
     E -->|Score > 0| F[Select Best Matching Driver]
-    F --> G[Resource Allocation: ioremap MMIO, PCI Bus Master, IOAPIC IRQ]
+    F --> G[Resource Allocation: 64-bit BAR decode, ioremap MMIO, Bus Master, IOAPIC IRQ]
     G --> H[Attach: drv->attach dev]
     H -->|Success| I[Device Active: dev->active = 1]
+    I --> J[Shutdown: driver_shutdown_all before power state change]
 ```
 
 ### 1. Registration (`driver_register`)
-Drivers register themselves during kernel boot (e.g. `e1000_driver_init()` in `main.c`). The driver structure is stored in the global driver table.
+Drivers register themselves during kernel boot (e.g. `e1000_driver_init()`, `ahci_driver_init()`, `nvme_driver_init()` in `main.c`). The driver structure is stored in the global driver table.
 
 ### 2. Enumeration & Probing
 `driver_attach_pci_devices()` iterates through all PCI buses (0–255), devices (0–31), and functions (0–7):
 1. Reads PCI Vendor ID and Device ID.
-2. Populates a temporary `struct device` with BAR configurations and IRQ line.
+2. Uses a unified 64-bit BAR decoder (`pci_read_bars()`) to extract physical MMIO bases and sizes into `dev->mmio_paddr` and `dev->mmio_size`.
 3. Invokes the `probe()` callback of each registered PCI driver. The driver evaluates compatibility and returns a match priority score (e.g. 100 for high-fidelity native match, 50 for generic fallback).
 
 ### 3. Resource Mapping & Activation
 When a driver is selected:
 1. An official `struct device` slot is allocated.
-2. If the device uses MMIO (`dev->mmio_paddr != 0`), `ioremap()` maps the physical BAR range to kernel virtual address space.
+2. If the device uses MMIO (`dev->mmio_paddr != 0`), `ioremap()` or `ioremap_wc()` maps the physical BAR range into the kernel's dedicated `IOMAP` virtual address region.
 3. PCI Bus Mastering and Memory/IO access are enabled via `pci_enable_bus_master()`.
 4. If an IRQ line is assigned, the corresponding IOAPIC entry is unmasked via `ioapicenable(dev->irq, 0)`.
 5. `drv->attach(dev)` is called to perform device-specific register setup.
 6. The device is marked active.
+
+### 4. Teardown & Power State Change (`driver_shutdown_all`)
+Before kernel reboot or poweroff, `driver_shutdown_all()` traverses all registered and active devices, invoking their `.detach` hooks (e.g., AHCI graceful port idle, NVMe 1.4 CC.SHN shutdown handshake) to ensure dirty buffers are flushed and hardware controllers reach quiescent states.
 
 ---
 
 ## 4. Memory-Mapped I/O (MMIO) & `ioremap`
 
 In OpenProninx 64-bit virtual memory layout:
-- `DEVSPACE_PHYS` is configured at `0xe0000000` (512 MiB window from `0xe0000000` to `0x100000000` / 4 GiB).
-- `DEVSPACE_P2V(a)` maps physical addresses directly to higher-half kernel space:
-  `0xffffffff00000000 + phys_addr` (e.g. `0xffffffffe0000000` .. `0xffffffffffffffff`).
+- `DMAP_BASE` (`0xffff800000000000`): Direct physical memory mapping.
+- `IOMAP_BASE` (`0xffffc00000000000`): Dedicated higher-half MMIO region for device registers and video framebuffers.
+- `KERNBASE` (`0xffffffff80000000`): Kernel code and data.
 
 ```c
-void *ioremap(uintptr_t phys_addr, uint size) {
-  if (phys_addr >= DEVSPACE_PHYS) {
-    return DEVSPACE_P2V(phys_addr);
-  }
-  return P2V(phys_addr);
-}
+void *ioremap(uintptr_t phys_addr, uint64_t size);
+void *ioremap_wc(uintptr_t phys_addr, uint64_t size); /* Write-Combining via PAT */
 ```
 
-Drivers access device registers via 32-bit volatile pointers:
+Drivers access device registers via volatile pointer types (structures in `ahci.h`, `nvme.h`, `virtio_gpu.h` are marked `volatile`):
 ```c
 volatile uint32_t *regs = (volatile uint32_t *)dev->mmio_vaddr;
 #define REG_READ(offset)  (*(volatile uint32_t *)((uintptr_t)regs + (offset)))

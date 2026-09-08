@@ -35,44 +35,48 @@ sequenceDiagram
 
 ---
 
-## 3. Trampoline (`kern/entryother.S`)
+## 3. Trampoline & Page Tables (`kern/entryother.S`, `kern/mp.c`)
 
 Application Processors start execution in 16-bit Real Mode at physical address `0x7000` (specified by the SIPI vector `0x07`).
 
 1. **Real Mode Setup:** Loads temporary 16-bit GDT at `0x7000` and enables protected mode (`CR0.PE`).
 2. **32-bit Protected Mode:** Enables Physical Address Extension (`CR4.PAE = 1`).
-3. **Paging:** Loads identity page tables located at `0x8000` into `CR3`.
+3. **Paging:** Loads identity page tables into `CR3`. AP page tables in `kern/mp.c` are mapped strictly with 2 MiB pages to ensure full compatibility across AP architectures that may not support 1 GiB huge pages.
 4. **Long Mode Activation:** Sets `IA32_EFER.LME = 1` via MSR `0xC0000080` and enables paging (`CR0.PG = 1`).
 5. **64-bit Jump:** Jumps to 64-bit trampoline entry point, loads the allocated kernel stack pointer, and calls `mpenter()`.
 
 ---
 
-## 4. APIC INIT-SIPI-SIPI Sequence (`kern/lapic.c`)
+## 4. APIC INIT-SIPI-SIPI Sequence & Timers (`kern/lapic.c`, `kern/delay.c`)
 
-The BSP controls AP startup using the Local APIC Interrupt Command Register (ICR):
+The BSP controls AP startup using the Local APIC Interrupt Command Register (ICR) with timing managed by `kern/delay.c` (calibrated against the i8254 PIT):
 
 ```c
 void lapicstartap(uchar apicid, uint32_t addr) {
   // 1. Assert INIT Level de-assert
   lapicw(ICRHI, apicid << 24);
   lapicw(ICRLO, ICR_INIT | ICR_LEVEL | ICR_ASSERT);
-  microdelay(200);
+  delay(200);
 
   lapicw(ICRLO, ICR_INIT | ICR_LEVEL);
-  microdelay(10000); // 10 ms delay
+  delay_ms(10); // 10 ms delay via calibrated PIT
 
   // 2. Send two Startup IPIs (SIPI) pointing to page vector (addr >> 12)
   for (int i = 0; i < 2; i++) {
     lapicw(ICRHI, apicid << 24);
     lapicw(ICRLO, ICR_STARTUP | (addr >> 12));
-    microdelay(200);
+    delay(200);
   }
 }
 ```
+
+### Dynamic Timer Calibration & IPIs
+- **APIC Timer Calibration:** Local APIC timer frequency is dynamically calibrated against the PIT rather than hardcoding static emulation constants.
+- **Halt IPI & Power Management:** The BSP coordinates power transitions and shutdown across all AP cores using dedicated Halt IPIs before executing the hardware reset / ACPI / EFI poweroff sequence.
 
 ---
 
 ## 5. Scheduler & Synchronization
 
-- Each CPU maintains its own private `struct cpu` state containing its Local APIC ID, per-core stack, GDT, interrupt nesting count (`ncli`), and current process pointer (`proc`).
-- Process scheduling is fully preemptive across cores with per-process and per-subsystem spinlocks (`proc.lock`, `tickslock`, `net_lock`).
+- Each CPU maintains its own private `struct cpu` state containing its Local APIC ID, per-core stack, GDT, TSS with IST stacks, interrupt nesting count (`ncli`), and current process pointer (`proc`).
+- Process scheduling is fully preemptive across cores with per-process and per-subsystem spinlocks (`proc.lock`, `tickslock`, `net_lock`). Kernel scheduler tick frequency is governed by `HZ` in `param.h`.

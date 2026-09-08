@@ -36,59 +36,28 @@ rejection and offline repair with FreeBSD tooling are demonstrated.
 
 ## Current implementation
 
-The kernel now has a bounded, read-only `blockdev` adapter and UFS2 format
-reader derived from the FreeBSD UFS2 format at revision
-`4aea6ea2eb400737837ff8d22c25688f88c7966c`. It validates a superblock, reads
-UFS2 inodes, reads direct data blocks, and can resolve a directory entry.
-All offsets are bounds-checked and corrupt directory records are rejected.
+The kernel now provides a modular storage architecture supporting:
+- **Hybrid GPT Partitioning:** Generated via `tools/mkimage.sh`, containing an ESP (FAT32 for UEFI), `fnu-boot`, and `fnu-root` partitions.
+- **Hardware Block Drivers:** Full PCI auto-probing and support for IDE/ATA, AHCI SATA (with COMRESET, IDENTIFY, and SATA Gen negotiation), and NVMe (with spec 1.4 compliant shutdown).
+- **RAMDisk Boot Module:** The root filesystem is passed cleanly as a boot module from the BIOS/UEFI bootloader via `bootinfo`, removing the need to embed the disk image directly inside the kernel binary.
+- **VFS Enhancements:** Dedicated path buffers (`MAXPATHLEN 512`, `MAXNAMLEN 255`), `getcwd(2)` with parent traversal (`..`), and robust inode reuse in `iget()` ensuring `fs_type` state isolation across filesystem drivers.
+- **UFS2 Integration:** A bounded, read-only `blockdev` adapter and UFS2 format reader derived from FreeBSD UFS2 specifications (revision `4aea6ea2eb400737837ff8d22c25688f88c7966c`). It validates superblocks, reads UFS2 inodes and direct/indirect blocks, bounds-checks offsets, and exposes valid FNU Data images at `/data`.
 
-The kernel now discovers an optional dedicated IDE device 2, validates it as a
-UFS2 volume and verifies the root inode and `.` directory record. It never
-attaches that volume to the legacy VFS and never writes it. When no external
-IDE device 1 is attached, OpenProninx boots as a fully self-contained LiveCD
-using its built-in in-memory root filesystem ramdisk (`DEV_RAMDISK`). When an
-external volume is attached to IDE device 1, it takes priority and can serve as
-either an external native root filesystem or a UFS2 system image.
-
-When a valid FNU Data image is supplied, it is exposed at `/data`.
-When a valid UFS2 system image replaces IDE device 1, it becomes the root
-volume. System images provide conventional top-level directories `/etc`,
-`/mount`, `/dev`, `/tmp`, `/usr` and `/home`; user programs live in `/usr/bin`.
-The initial adapter supports regular files, directories,
-direct blocks and one level of indirect UFS2 blocks. UFS2 names of up to 255
-bytes traverse the VFS and are returned through `getdents`; the legacy xv6
-filesystem retains its 13-byte component limit. The current UFS2 writer can
-create files and directories, write direct blocks, make and remove hard links,
-and remove empty directories. Symlinks, double/triple indirection and
-crash-safe metadata updates remain unavailable.
+When booted without external data disks, OpenProninx operates as a self-contained system using the bootloader-provided root ramdisk (`DEV_RAMDISK`). When an external volume or secondary partition is attached, it is recognized and integrated into the storage hierarchy.
 
 For QEMU, attach a prepared raw UFS2 image as the optional device:
 
 ```sh
-make qemu UFS2_DATA_IMG=/absolute/path/to/fnu-data.ufs
+bmake qemu UFS2_DATA_IMG=/absolute/path/to/fnu-data.ufs
 ```
 
-To exercise a complete UFS2 system root instead of the legacy `fs.img`:
+To exercise a complete UFS2 system root instead of the default root image:
 
 ```sh
-make qemu UFS2_SYSTEM_IMG=/absolute/path/to/fnu-system.ufs
+bmake qemu UFS2_SYSTEM_IMG=/absolute/path/to/fnu-system.ufs
 ```
 
-`make system-image` stages the FNU userspace and invokes the host's audited
-BSD-compatible `makefs` with `version=2`. It intentionally fails when that
-tool is unavailable: PRONINX does not contain a second, homemade UFS formatter.
-Release engineering publishes the resulting image for ordinary Linux/WSL
-operators, who only need `make qemu UFS2_SYSTEM_IMG=...`.
-
-The GitHub Actions release path builds the kernel and userspace on Ubuntu,
-then creates and checks `fnu-system.ufs` inside a FreeBSD VM. This keeps the
-UFS implementation tooling out of the target OS and out of normal developer
-workstations while preserving FreeBSD-format compatibility.
-
-There is no FNU `mkfs`: UFS2 volumes are provisioned by installer or
-image-building tooling using a compatible, audited implementation. The next
-storage milestone is a partition manager and VFS attachment of this dedicated
-data device.
+`bmake system-image` stages the FNU userspace and invokes the host's audited BSD-compatible `makefs` with `version=2`. Release engineering publishes the resulting image for ordinary Linux/WSL operators.
 
 ## Required validation before writable use
 
