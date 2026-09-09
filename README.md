@@ -1,56 +1,101 @@
-# FNU/OpenProninx
+# OpenProninx
 
-FNU/OpenProninx (short name: OpenProninx) is a native 64-bit x86-64 operating system featuring Symmetrical Multiprocessing (SMP), an extensible device driver framework, a native networking subsystem, a supervisor/service architecture, and a rich userspace environment. The current baseline is **Core 0.1.5-dev**.
+**OpenProninx** is a free and independent operating system distributed under the **BSD 3-Clause License**. It is developed by **Foundry Tech Inc.**, founded by Vyacheslav Pronin.
 
----
+OpenProninx originated from **PRONINX**, an earlier operating system created by the same developer as part of Pronin Software Distribution. PRONINX was originally based on the **xv6** kernel, specifically its **x86_64 port**.
 
-## Key Features & Capabilities
-
-- **Symmetrical Multiprocessing (SMP):** Native 64-bit multi-core boot via APIC INIT-SIPI-SIPI, 16-bit to 64-bit trampoline (`entryother.S`), and a pre-emptive SMP scheduler across all available CPU cores.
-- **Extensible Driver Framework:** Unified device and driver model with automated PCI bus enumeration, dynamic match probing, safe Memory-Mapped I/O mapping (`ioremap`), and centralized IRQ / polling dispatching. See [`doc/DRIVERS.md`](doc/DRIVERS.md).
-- **Gigabit Networking Subsystem:** Native Intel E1000 Ethernet driver (`em0`) and VirtIO-Net (`vtnet0`) coupled with an integrated `lwIP` (v2.2.1) protocol stack supporting DHCP, DNS, ARP, IPv4, ICMP, UDP, and TCP. See [`doc/NETWORK.md`](doc/NETWORK.md).
-- **VBE Framebuffer & Display:** Kernel-managed VBE framebuffer text console (1024x768 / up to 1920x1080) with custom VGA font rendering and automatic fallback. See [`doc/VIDEO.md`](doc/VIDEO.md).
-- **Storage Subsystems:** IDE block storage supporting both legacy root filesystems and UFS2 filesystem volumes (`/data`). See [`doc/STORAGE.md`](doc/STORAGE.md).
-- **PSH Interactive Shell & Userspace:** Built-in shell offering system utilities (`ls`, `cat`, `top`, `ps`, `netinfo`, `ping`, `resolve`, `adduser`, `chown`, `chmod`) and service supervisor management (`services`, `health`, `status`).
+OpenProninx is no longer an educational operating system based on xv6. It has evolved into a standalone operating system with its own kernel subsystems, userspace, drivers, networking, storage, and graphics (framebuffer) support.
 
 ---
 
-## Build and Run
+## FNU — Foundry Not Unix
 
-### Prerequisites
-A POSIX environment with `bmake`, Clang, GNU binutils, Bash, and QEMU (e.g. Ubuntu, Fedora, or WSL2 on Windows).
+**FNU (Foundry Not Unix)** is a collection of free, **GPL-free userspace software** developed specifically for OpenProninx.
 
-```sh
-# Build kernel and disk images
-bmake
+It includes system software such as:
 
-# Run automated smoke test suite
-bmake smoke
+* `init`
+* **Proninx Shell**
+* other userspace utilities and components
 
-# Launch QEMU with SMP (2 cores) and Intel E1000 networking
-bmake qemu
+FNU provides the software required by OpenProninx rather than attempting to reproduce an existing Unix userspace.
 
-# Run with custom CPU core count
-bmake qemu CPUS=4
+---
 
-# Optional: Attach UFS2 data volume
-bmake qemu UFS2_DATA_IMG=/path/to/fnu-data.ufs
-```
+## What FNU Is Not
+
+### FNU is not an operating system
+
+The operating system is **OpenProninx**.
+
+FNU is the userspace software developed for it.
+
+### FNU is not a GNU replacement
+
+FNU is not intended to reimplement:
+
+* `bash`
+* `coreutils`
+* `glibc`
+* or the GNU userspace as a whole
+
+The goal is to provide the software specifically required by OpenProninx.
+
+### FNU is not a compatibility layer
+
+FNU software is written for **OpenProninx**. It is not intended to run on Linux or other operating systems.
+
+---
+
+## Licensing
+
+All FNU components are distributed under the **BSD 3-Clause License**, the same license used by OpenProninx.
+
+No FNU component will depend on code distributed under the **GPL** or **LGPL**.
+
+This licensing policy is intentional and applies to the project as a whole.
 
 ---
 
 ## Documentation
 
-- [`doc/ABI.md`](doc/ABI.md): System call ABI reference — stable core ABI (frozen numbers and signatures) and experimental subsystems.
-- [`doc/DRIVERS.md`](doc/DRIVERS.md): Driver framework architecture, lifecycle, and driver development guide.
-- [`doc/SMP.md`](doc/SMP.md): 64-bit Symmetrical Multiprocessing boot sequence and topology.
-- [`doc/NETWORK.md`](doc/NETWORK.md): Network stack integration, supported NICs, and socket capabilities.
-- [`doc/STORAGE.md`](doc/STORAGE.md): Filesystem layouts, UFS2 volume management, and IDE drivers.
-- [`doc/VIDEO.md`](doc/VIDEO.md): VBE framebuffer configuration and graphics subsystem.
-- [`CHANGELOG-RELEASE.TXT`](CHANGELOG-RELEASE.TXT): Release notes and major changes overview.
+* [`doc/ABI.md`](doc/ABI.md): System call ABI reference — stable core ABI (frozen numbers and signatures) and experimental subsystems.
+* [`doc/DRIVERS.md`](doc/DRIVERS.md): Driver framework architecture, lifecycle, and driver development guide.
+* [`doc/SMP.md`](doc/SMP.md): 64-bit Symmetrical Multiprocessing boot sequence and topology.
+* [`doc/NETWORK.md`](doc/NETWORK.md): Network stack integration, supported NICs, and socket capabilities.
+* [`doc/STORAGE.md`](doc/STORAGE.md): Filesystem layouts, UFS2 volume management, and IDE drivers.
+* [`doc/VIDEO.md`](doc/VIDEO.md): VBE framebuffer configuration and graphics subsystem.
+* [`doc/UFS2_WRITE.md`](doc/UFS2_WRITE.md): UFS2 write support.
+* [`doc/THIRD_PARTY_NOTICES.md`](doc/THIRD_PARTY_NOTICES.md): Third-party software and license notices.
 
 ---
 
-## Licensing & Provenance
+## Quick Start
 
-This repository is distributed under the BSD 3-Clause License. See [`LICENSE`](LICENSE) and [`COPYRIGHT`](COPYRIGHT) for details.
+### Build an image
+
+```sh
+bmake
+```
+
+### Run with QEMU
+
+To build and automatically launch OpenProninx in QEMU:
+
+```sh
+bmake qemu
+```
+
+### Requirements
+
+* `bmake`
+* `clang`
+* QEMU (for `bmake qemu`)
+
+---
+
+## License
+
+OpenProninx and FNU are distributed under the **BSD 3-Clause License**.
+
+Copyright © 2026 **Foundry Tech Inc.**
