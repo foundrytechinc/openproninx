@@ -1,6 +1,6 @@
 # OpenProninx
 
-**OpenProninx** is a free and independent operating system distributed under the **BSD 3-Clause License**. It is developed by **Foundry Tech Inc.**, founded by Vyacheslav Pronin.
+**OpenProninx** is a free and independent operating system distributed under the **BSD 3-Clause License**. It is developed by **Foundry Tech Collective.**, founded by Vyacheslav Pronin.
 
 OpenProninx originated from **PRONINX**, an earlier operating system created by the same developer as part of Pronin Software Distribution. PRONINX was originally based on the **xv6** kernel, specifically its **x86_64 port**.
 
