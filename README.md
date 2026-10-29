@@ -98,4 +98,4 @@ bmake qemu
 
 OpenProninx and FNU are distributed under the **BSD 3-Clause License**.
 
-Copyright © 2026 **Foundry Tech Inc.**
+Copyright © 2026 **Foundry Technoliges Collective.**
