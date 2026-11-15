@@ -1,6 +1,6 @@
 # OpenProninx
 ```
-**WARNING (Linux builds):** do not use the `makefs` from Debian/Ubuntu (package makefs, 20190105).
+WARNING (Linux builds): do not use the `makefs` from Debian/Ubuntu (package makefs, 20190105).
 It writes the UFS2 superblock at 8 KiB instead of 64 KiB, so the build fails with
 mkimg: not UFS2, and even if forced through, the bootloader rejects the image.
 Build makefs from source (we used a FreeBSD/DragonFly-derived port: https://github.com/kusumi/makefs) and put it before `/usr/sbin` in `PATH`. Verify the result:
