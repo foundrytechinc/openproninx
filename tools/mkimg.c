@@ -85,16 +85,26 @@ static uint8_t *readfile(const char *path, size_t *len) {
 #define SB_NCG 44
 #define SB_FSIZE 52
 #define SB_ID 144
+#define SB_VOLNAME 680
+#define MAXVOLLEN 32
 #define SB_OLD_CPG 180
 #define SB_FPG 188
 #define SB_OLD_POSTBLFORMAT 1356
 #define SB_OLD_NRPOS 1360
 #define SB_MAGIC 1372
 
+static const char *volname; // -L: older makefs has no label=
+
 static void sb_finish(FILE *f, off_t at, const uint8_t *id, const char *path) {
-  uint8_t one[4];
+  uint8_t one[4], name[MAXVOLLEN];
 
   le32(one, 1);
+  if (volname != 0) {
+    memset(name, 0, sizeof(name));
+    strncpy((char *)name, volname, sizeof(name) - 1);
+    if (fseeko(f, at + SB_VOLNAME, SEEK_SET) < 0 || fwrite(name, 1, sizeof(name), f) != sizeof(name))
+      die2("cannot write", path);
+  }
   if (fseeko(f, at + SB_ID, SEEK_SET) < 0 || fwrite(id, 1, 8, f) != 8 ||
       fseeko(f, at + SB_OLD_CPG, SEEK_SET) < 0 || fwrite(one, 1, 4, f) != 4 ||
       fseeko(f, at + SB_OLD_POSTBLFORMAT, SEEK_SET) < 0 ||
@@ -696,7 +706,7 @@ static void usage(void) {
   fprintf(stderr,
           "usage: %s [-a] -o OUT -m MBR -e MBR.elf -s STAGE2 -k KERNEL "
           "-b BOOTX64.EFI [-r RAMDISK] [-u ROOT.ufs] [-R ROOT-UUID] [-w SWAP-MB]\n"
-          "       %s -S DIR\n       %s -G\n       %s -i UFS\n",
+          "       %s -S DIR\n       %s -G\n       %s -i UFS [-L label]\n",
           progname, progname, progname, progname);
   exit(1);
 }
@@ -727,7 +737,7 @@ int main(int argc, char **argv) {
   };
   uint32_t efidir, bootdir, fnudir;
 
-  while ((c = getopt(argc, argv, "ao:m:e:s:k:b:r:u:S:R:Gi:w:")) != -1) {
+  while ((c = getopt(argc, argv, "ao:m:e:s:k:b:r:u:S:R:Gi:L:w:")) != -1) {
     switch (c) {
     case 'a': active = 1; break;
     case 'o': outpath = optarg; break;
@@ -742,6 +752,7 @@ int main(int argc, char **argv) {
     case 'R': rootuuid = optarg; break;
     case 'G': newuuid = 1; break;
     case 'i': newid = optarg; break;
+    case 'L': volname = optarg; break;
     case 'w':
       swap_secs = strtoull(optarg, &end, 10) * MB / SECTOR;
       if (*optarg == 0 || *end != 0 || swap_secs == 0)

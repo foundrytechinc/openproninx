@@ -42,7 +42,7 @@ LIBC_CFLAGS=-Ilib/libc/include -Ilib/libc/gdtoa -Ilib/libc/arch \
 DTOA_CFLAGS=-Ilib/libc/gdtoa -DINFNAN_CHECK -DNO_FENV_H -DUSE_LOCALE
 BOOT_LDFLAGS=-m elf_i386
 # PE32+
-UEFI_CFLAGS=-target x86_64-unknown-uefi -ffreestanding -fno-builtin
+UEFI_CFLAGS=-target x86_64-unknown-windows -ffreestanding -fno-builtin -mno-stack-arg-probe
 UEFI_CFLAGS+=-fno-strict-aliasing -fno-stack-protector -fno-omit-frame-pointer
 UEFI_CFLAGS+=-mno-red-zone -mno-mmx -mno-sse -O1 -std=c11 -Wall -Wextra
 UEFI_CFLAGS+=-Wno-unknown-warning-option -Werror

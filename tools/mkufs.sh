@@ -18,6 +18,6 @@ fi
 spec=$(mktemp)
 trap 'rm -f "$spec"' EXIT HUP INT TERM
 "$mkimg" -S "$tree" > "$spec"
-makefs -t ffs -s "${size}m" -o version=2,bsize=8192,fsize=1024,label="$label" \
+makefs -t ffs -s "${size}m" -o version=2,bsize=8192,fsize=1024 \
 	-F "$spec" "$out" "$tree" > /dev/null
-"$mkimg" -i "$out"
+"$mkimg" -i "$out" -L "$label"

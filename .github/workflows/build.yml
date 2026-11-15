@@ -15,7 +15,13 @@ jobs:
       - name: Install the build toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y bmake clang lld llvm qemu-system-x86 ovmf
+          sudo apt-get install -y bmake clang lld llvm qemu-system-x86 ovmf libssl-dev uuid-dev
+      - name: Build FreeBSD makefs
+        run: |
+          git clone https://github.com/kusumi/makefs /tmp/makefs
+          git -C /tmp/makefs checkout 607449619ef5f85b6a2b282e16182e342fdebeaa
+          make -C /tmp/makefs USE_HAMMER2=0 USE_EXFAT=0
+          sudo install -m 0755 /tmp/makefs/src/usr.sbin/makefs/makefs /usr/local/bin/makefs
       - name: Build and boot-smoke images without mutating sources
         run: bmake ci
       - name: Publish evaluation images

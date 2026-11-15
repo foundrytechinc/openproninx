@@ -192,6 +192,9 @@ struct syslog_data {
 #include <machine/_types.h>
 
 __BEGIN_DECLS
+/* clang 19 and older do not know __syslog__ */
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wignored-attributes"
 void	closelog(void);
 void	openlog(const char *, int, int);
 int	setlogmask(int);
@@ -205,6 +208,7 @@ void	syslog_r(int, struct syslog_data *, const char *, ...)
      __attribute__((__format__(__syslog__,3,4)));
 void	vsyslog_r(int, struct syslog_data *, const char *, __va_list);
 int	sendsyslog(const char *, __size_t, int);
+#pragma clang diagnostic pop
 __END_DECLS
 
 #else /* !_KERNEL */
