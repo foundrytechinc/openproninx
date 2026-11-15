@@ -1,0 +1,4 @@
+desc=set up /var
+stage=boot
+requires=mountall
+step=mkdir -p /var/run /var/log/svc /var/tmp /var/empty /var/db && chmod 1777 /var/tmp && chmod 0555 /var/empty && for f in /var/run/* /var/run/.[!.]*; do case "$f" in /var/run/fnusvc.*|*'*'*) ;; *) rm -rf "$f" ;; esac; done

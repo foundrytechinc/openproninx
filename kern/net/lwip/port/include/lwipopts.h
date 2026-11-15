@@ -1,8 +1,6 @@
 #ifndef PRONINX_LWIPOPTS_H
 #define PRONINX_LWIPOPTS_H
 
-/* A single-core, polling lwIP port. Network input and timers run in kernel
- * interrupt context, so the sequential and netconn APIs stay disabled. */
 #define NO_SYS 1
 #define SYS_LIGHTWEIGHT_PROT 0
 #define LWIP_TIMERS 1
@@ -19,35 +17,46 @@
 #define LWIP_ARP 1
 #define LWIP_ETHERNET 1
 #define LWIP_IGMP 0
-#define LWIP_DNS 1
-#define DNS_TABLE_SIZE 4
-#define DNS_MAX_NAME_LENGTH 64
+#define LWIP_DNS 0
+#define DHCP_ADD_EXTRA_REQUEST_OPTIONS , DHCP_OPTION_DNS_SERVER
+#define LWIP_HOOK_DHCP_PARSE_OPTION(netif, dhcp, state, msg, msg_type, option, len, pbuf, offset) \
+  proninx_dhcp_option((msg_type), (option), (len), (pbuf), (offset))
+#define SO_REUSE 1
 #define LWIP_SOCKET 0
 #define LWIP_NETCONN 0
 #define LWIP_NETIF_API 0
-#define LWIP_HAVE_LOOPIF 0
-#define LWIP_NETIF_LOOPBACK 0
+#define LWIP_NETIF_STATUS_CALLBACK 1
+#define LWIP_HAVE_LOOPIF 1
+#define LWIP_NETIF_LOOPBACK 1
+#define LWIP_LOOPBACK_MAX_PBUFS 64
 #define LWIP_STATS 0
-#define LWIP_DEBUG 0
 #define LWIP_NOASSERT 1
 #define LWIP_CHECKSUM_CTRL_PER_NETIF 0
 #define LWIP_CHKSUM_ALGORITHM 3
-#define MEM_LIBC_MALLOC 0
-#define MEM_SIZE (16 * 1024)
-#define MEMP_MEM_MALLOC 0
-#define MEMP_NUM_PBUF 16
-#define MEMP_NUM_RAW_PCB 2
-#define MEMP_NUM_UDP_PCB 8
-#define MEMP_NUM_TCP_PCB 8
-#define MEMP_NUM_TCP_PCB_LISTEN 4
+#define MEM_CUSTOM_ALLOCATOR 1
+#define MEM_CUSTOM_MALLOC proninx_lwip_malloc
+#define MEM_CUSTOM_CALLOC proninx_lwip_calloc
+#define MEM_CUSTOM_FREE proninx_lwip_free
+#define MEMP_MEM_MALLOC 1
+#define MEM_ALIGNMENT 8
+#define LWIP_SUPPORT_CUSTOM_PBUF 1
 #define TCP_MSS 1460
-#define TCP_SND_BUF (4 * TCP_MSS)
-#define TCP_WND (4 * TCP_MSS)
-#define MEMP_NUM_SYS_TIMEOUT 16
-#define PBUF_POOL_SIZE 16
+// sockbuf ceiling; the scale is the least that reaches it
+#define PRONINX_SB_MAX (2 * 1024 * 1024)
+#define LWIP_WND_SCALE 1
+#define TCP_RCV_SCALE 6
+#define TCP_SND_BUF PRONINX_SB_MAX
+#define TCP_SNDLOWAT (2 * TCP_MSS + 1) // netconn only
+#define TCP_WND PRONINX_SB_MAX
+#define LWIP_TCP_PCB_NUM_EXT_ARGS 1
+#define TCP_LISTEN_BACKLOG 1
 #define PBUF_POOL_BUFSIZE 1600
-#define ARP_TABLE_SIZE 8
-#define ARP_QUEUEING 0
+#define ARP_TABLE_SIZE 64
+#define ARP_QUEUEING 1
 #define ETHARP_SUPPORT_STATIC_ENTRIES 0
+
+#define LWIP_HOOK_FILENAME "lwip_hooks.h"
+#define LWIP_HOOK_TCP_ISN proninx_tcp_isn
+#define LWIP_HOOK_TCP_OUT_ADD_TCPOPTS proninx_tcp_out
 
 #endif

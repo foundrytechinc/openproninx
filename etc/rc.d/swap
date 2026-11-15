@@ -1,0 +1,4 @@
+desc=enable swap
+stage=boot
+requires=fsck
+step=/usr/bin/swapctl -A

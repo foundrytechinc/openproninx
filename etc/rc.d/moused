@@ -1,0 +1,3 @@
+desc=mouse daemon
+requires=var
+run=/usr/bin/moused -f

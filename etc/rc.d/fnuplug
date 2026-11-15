@@ -1,0 +1,3 @@
+desc=mount devices when plugged in
+requires=var
+run=/usr/bin/fnuplug

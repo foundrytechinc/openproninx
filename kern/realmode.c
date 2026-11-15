@@ -5,39 +5,15 @@
 #include "param.h"
 #include "proc.h"
 #include "realmode.h"
-#include "spinlock.h"
+#include "mutex.h"
 #include "x86.h"
 
 extern uchar _binary_rmtramp_start[];
 extern uchar _binary_rmtramp_size[];
-extern pte_t *kpgdir;
+extern pte_t *kernel_pgdir;
 
-static struct spinlock rmlock;
+static struct mutex rmlock;
 static int ready;
-
-// the trampoline, its stack and its page tables all sit under 1M
-static int low_memory_is_ram(uint64_t base, uint64_t end) {
-  const struct fnu_bootinfo *bi = bootinfo();
-  uint64_t at = base;
-  uint i, progress;
-
-  if (bi == 0)
-    return 0;
-  while (at < end) {
-    progress = 0;
-    for (i = 0; i < bi->memranges; i++) {
-      if (bi->mem[i].type != FNU_MEM_RAM || bi->mem[i].base > at ||
-          bi->mem[i].base + bi->mem[i].length <= at)
-        continue;
-      at = bi->mem[i].base + bi->mem[i].length;
-      progress = 1;
-      break;
-    }
-    if (!progress)
-      return 0;
-  }
-  return 1;
-}
 
 uint32_t realmode_ivt(int vector) {
   const volatile uint32_t *ivt = (const volatile uint32_t *)P2V(0);
@@ -46,50 +22,51 @@ uint32_t realmode_ivt(int vector) {
 
 int realmode_available(void) { return ready; }
 
-void *realmode_buffer(void) { return P2V(RM_BUF); }
+static uint64_t rm_pa, rm_pml4; // from lowmem
+
+void *realmode_buffer(void) { return P2V(rm_pa + RM_BUF); }
+
+uint32_t realmode_buffer_lin(void) { return (uint32_t)(rm_pa + RM_BUF); }
 
 void realmode_init(void) {
-  uint64_t *pdpt = (uint64_t *)P2V(RM_PDPT);
-  uint64_t *pd = (uint64_t *)P2V(RM_PD);
-  int i;
-
   const struct fnu_bootinfo *bi = bootinfo();
 
-  initlock(&rmlock, "realmode");
+  mtx_init(&rmlock, "realmode");
 
-  // uefi leaves no bios behind the ivt
-  if (bi != 0 && bi->firmware == FNU_FIRMWARE_UEFI)
+  if (bi != 0 && bi->firmware == FNU_FIRMWARE_UEFI) {
+    x86bios_init();
     return;
-  // an empty int 10h vector means no video bios was ever posted here
+  }
   if (realmode_ivt(0x10) == 0)
     return;
-  // and the firmware has to agree that the low pages are ours to scribble on
-  if (!low_memory_is_ram(RM_CODE, RM_PD + PGSIZE))
+  if ((uintptr_t)_binary_rmtramp_size > RM_DATA)
+    panic("realmode: the code runs into its data");
+  if ((rm_pa = lowmem_alloc(RM_PAGES)) == 0 || (rm_pml4 = lowmem_alloc(1)) == 0 ||
+      lowmem_identity() == 0) {
+    printf("realmode: no low memory, no bios calls\n");
     return;
-
-  memmove(P2V(RM_CODE), _binary_rmtramp_start,
-          (uintptr_t)_binary_rmtramp_size);
-  memset(pdpt, 0, PGSIZE);
-  memset(pd, 0, PGSIZE);
-  for (i = 0; i < 512; i++)
-    pd[i] = ((uint64_t)i << 21) | PTE_P | PTE_W | PTE_PS;
-  pdpt[0] = RM_PD | PTE_P | PTE_W;
+  }
+  memmove(P2V(rm_pa), _binary_rmtramp_start, (uintptr_t)_binary_rmtramp_size);
   ready = 1;
+  x86bios_init();
 }
 
-// leaving long mode wants a table that maps the kernel and the low meg 1:1
 int realmode_int(int vector, struct realregs *r) {
-  volatile uint16_t *br = (volatile uint16_t *)P2V(RM_DATA);
-  uint64_t *pml4 = (uint64_t *)P2V(RM_PML4);
+  volatile uint16_t *br = (volatile uint16_t *)P2V(rm_pa + RM_DATA);
+  uint64_t *pml4 = (uint64_t *)P2V(rm_pml4);
   void (*enter)(void);
+  struct cpu_info *c;
   uint64_t cr3;
+  uint32_t tpr;
 
   if (!ready)
     return -1;
 
-  acquire(&rmlock);
-  memmove(pml4, kpgdir, PGSIZE);
-  pml4[0] = RM_PDPT | PTE_P | PTE_W;
+  mtx_enter(&rmlock);
+  c = curcpu();
+  memmove(pml4, kernel_pgdir, PGSIZE);
+  pml4[0] = lowmem_identity() | PTE_P | PTE_W;
+  *(volatile uint64_t *)P2V(rm_pa + RM_DATA + BS_CR3) = rm_pml4;
 
   br[BR_AX / 2] = r->ax;
   br[BR_BX / 2] = r->bx;
@@ -100,17 +77,19 @@ int realmode_int(int vector, struct realregs *r) {
   br[BR_ES / 2] = r->es;
   br[BR_VEC / 2] = (uint16_t)vector;
 
-  // the blob is linked at RM_CODE, callable once the identity map is live
-  enter = (void (*)(void))(uintptr_t)RM_CODE;
+  enter = (void (*)(void))(uintptr_t)rm_pa;
+  tpr = lapic_introff();
   cr3 = rcr3();
-  lcr3(RM_PML4);
+  lcr3(rm_pml4);
   enter();
   lcr3(cr3);
+  wrmsr(MSR_GS_BASE, (uint64_t)(uintptr_t)c);
+  lapic_intron(tpr);
 
   r->ax = br[BR_AX / 2];
   r->bx = br[BR_BX / 2];
   r->cx = br[BR_CX / 2];
   r->dx = br[BR_DX / 2];
-  release(&rmlock);
+  mtx_leave(&rmlock);
   return 0;
 }

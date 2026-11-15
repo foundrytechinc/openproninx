@@ -1,17 +1,14 @@
 #ifndef PRONINX_X86_64_ELF_H
 #define PRONINX_X86_64_ELF_H
 
-// Format of an ELF executable file
-// This definitions are used for *64-bit* ELF executable.
-
 #include "inc/types.h"
 
 #define ELF_MAGIC 0x464C457FU // "\x7FELF" in little endian
 
-// File header
+// file header
 struct elfhdr {
   uint32_t magic;  // must equal ELF_MAGIC
-  uint8_t elf[12]; // CLASS, DATA, VERSION, OSABI, ABIVERSION, PAD
+  uint8_t elf[12];
   uint16_t type;
   uint16_t machine;
   uint32_t version;
@@ -27,7 +24,7 @@ struct elfhdr {
   uint16_t shstrndx;
 };
 
-// Program section header
+// program header
 struct proghdr {
   uint32_t type;
   uint32_t flags;
@@ -39,10 +36,10 @@ struct proghdr {
   uint64_t align;
 };
 
-// Values for Proghdr type
+// Proghdr type
 #define ELF_PROG_LOAD 1
 
-// Flag bits for Proghdr flags
+// Proghdr flags
 #define ELF_PROG_FLAG_EXEC 1
 #define ELF_PROG_FLAG_WRITE 2
 #define ELF_PROG_FLAG_READ 4

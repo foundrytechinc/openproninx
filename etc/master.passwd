@@ -1,0 +1,7 @@
+# name:hash:uid:gid:class:change:expire:gecos:home:shell
+#
+# the system's own accounts; hashes are bcrypt, * is no password
+# only root may read this; people's accounts are made with useradd(8)
+root:$2b$10$jN2MKCT40n2XrMIhj4TA2O.uTrKBksflMUSk6dVKaCTusmS93Lb6m:0:0::0:0:Charlie &:/root:/usr/bin/sh
+daemon:*:1:1::0:0:The devil himself:/root:/usr/bin/nologin
+nobody:*:32767:32767::0:0:Unprivileged user:/nonexistent:/usr/bin/nologin

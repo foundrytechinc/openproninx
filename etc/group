@@ -1,0 +1,7 @@
+# name:*:gid:member,member
+#
+# wheel is gid 0: it may take the machine down, and doas(1) asks for it
+wheel:*:0:root
+daemon:*:1:daemon
+users:*:100:
+nobody:*:32767:

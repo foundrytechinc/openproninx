@@ -1535,6 +1535,7 @@ dhcp_parse_reply(struct pbuf *p, struct dhcp *dhcp)
     return ERR_BUF;
   }
   msg_in = (struct dhcp_msg *)p->payload;
+  LWIP_UNUSED_ARG(msg_in);
 #if LWIP_DHCP_BOOTP_FILE
   /* clear boot file name */
   dhcp->boot_file_name[0] = 0;

@@ -1,0 +1,4 @@
+desc=mount filesystems from /etc/filesystems
+stage=boot
+requires=root
+step=/usr/bin/mount -a

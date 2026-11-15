@@ -1,0 +1,45 @@
+#ifndef PRONINX_OPEN_H
+#define PRONINX_OPEN_H
+
+// HOW A FILE IS OPENED
+#define FNU_OPEN_READ 0x001
+#define FNU_OPEN_WRITE 0x002
+#define FNU_OPEN_READWRITE (FNU_OPEN_READ | FNU_OPEN_WRITE)
+#define FNU_OPEN_NOWAIT 0x004
+#define FNU_OPEN_APPEND 0x008
+#define FNU_OPEN_CREATE 0x010
+#define FNU_OPEN_TRUNCATE 0x020
+#define FNU_OPEN_NEW 0x040
+#define FNU_OPEN_CLOSEEXEC 0x080
+#define FNU_OPEN_UNCACHED 0x100
+#define FNU_OPEN_WRITETHROUGH 0x200
+#define FNU_OPEN_NOLINK 0x400
+#define FNU_OPEN_DIRONLY 0x800
+#define FNU_OPEN_SYSFILE 0x1000
+
+#define FNU_IO_HERE (-1)
+
+// fnu_flush: every volume
+#define FNU_FLUSH_ALL (-1)
+
+// where a seek counts from
+#define FNU_SEEK_START 0
+#define FNU_SEEK_HERE 1
+#define FNU_SEEK_TAIL 2
+
+#define FNU_FD_CWD (-2)
+#define FNU_PATH_NOFOLLOW 0x1
+#define FNU_PATH_FOLLOW 0x2
+
+#define FNU_TIME_NOW (-1)
+#define FNU_TIME_KEEP (-2)
+
+#define FNU_ACCESS_EXISTS 0
+#define FNU_ACCESS_READ 0x1
+#define FNU_ACCESS_WRITE 0x2
+#define FNU_ACCESS_EXEC 0x4
+#define FNU_ACCESS_REAL 0x1
+
+#define FNU_REMOVE_DIR 0x1
+
+#endif

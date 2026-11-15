@@ -1,0 +1,4 @@
+desc=clean /tmp
+stage=boot
+requires=mountall
+step=rm -rf /tmp/* /tmp/.[!.]* /tmp/..?* && chmod 1777 /tmp

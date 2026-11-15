@@ -1,82 +1,70 @@
-# OpenProninx Symmetrical Multiprocessing (SMP) Architecture
+# SMP
 
-## 1. Overview
+All application processors (APs) found in the MADT, or in the MP table when
+there is no MADT, are started at boot and run the scheduler.
 
-OpenProninx features full 64-bit Symmetrical Multiprocessing (SMP) on x86-64 hardware. All available application processors (APs) are discovered at boot, brought up through the APIC INIT-SIPI-SIPI sequence, transitioned through 16-bit real mode into 64-bit long mode via a dedicated trampoline, and integrated into the multicore kernel scheduler.
+## Starting an AP
 
----
+1. `lowmem.c` gives a page under 1 MB for the trampoline. The first 64 KB
+   and the BIOS area at the top are left alone.
+2. `entryother.S` is copied there. It is linked at 0, takes its base from
+   `%cs` and patches its GDT pointers and far jumps.
+3. The BSP sends INIT, INIT deassert and two STARTUPs (`lapicstartap`).
+   Only CPUs older than Intel family 6, AMD 0Fh and Hygon 18h get the
+   10 ms wait after INIT; the rest get 10 us.
+4. The AP goes real mode, then 32 bit with PAE and the low page tables, then
+   long mode (with NXE if the CPU has it), and jumps to `mpentry`, which
+   loads the kernel page table and calls `mp_startup()`.
+5. `mp_startup()` sets up x2APIC if chosen, MTRRs, `%gs`, GDT, TSC_ADJUST,
+   the local APIC and IDT, then enters the scheduler.
 
-## 2. Boot Flow & Processor Topology
+Every step writes its number into the trampoline header. An AP that does not
+come up within 5 seconds is skipped and the boot prints the step it reached,
+the APIC error register and the SMI count. If no AP starts at all, the BSP
+tries once more with an INIT/STARTUP broadcast.
 
-The SMP startup sequence consists of the following phases:
+During boot a performance counter NMI fires twice a second. If the console
+is silent for 20 seconds it prints where the boot CPU is.
 
-```mermaid
-sequenceDiagram
-    autonumber
-    participant BSP as Bootstrap CPU (CPU 0)
-    participant APIC as Local APIC
-    participant Trampoline as Trampoline (0x7000)
-    participant AP as Application Processor (AP)
+The S3 wake starts the APs again through the same page.
 
-    BSP->>BSP: mpinit(): Parse Intel MP Tables (_MP_)
-    BSP->>Trampoline: Copy entryother binary to physical 0x7000
-    BSP->>Trampoline: Setup boot PML4/PDPT tables at 0x8000/0x9000
-    BSP->>APIC: lapicstartap(apicid, 0x7000) (INIT - SIPI - SIPI)
-    APIC->>AP: Startup Interrupt at vector 0x07 (0x7000)
-    AP->>Trampoline: Execute entryother.S (16-bit real mode)
-    AP->>Trampoline: Enable CR4.PAE, load identity CR3 (0x8000)
-    AP->>Trampoline: Enable IA32_EFER.LME, CR0.PG (Long Mode)
-    AP->>AP: Jump to 64-bit mpenter()
-    AP->>AP: Load kernel page tables (kpgdir), initialize GDT & IDT
-    AP->>AP: Signal started flag: mycpu()->started = 1
-    BSP->>BSP: startothers(): Wait for AP online confirmation
-    AP->>AP: scheduler(): Enter multicore scheduler loop
-```
+## Scheduler
 
----
+`kern/sched.c` follows DragonFly's `usched_dfly`.
 
-## 3. Trampoline & Page Tables (`kern/entryother.S`, `kern/mp.c`)
+- Each CPU has 32 run queues, four priorities each. Locks are per run queue,
+  per thread (`p->lock`) and per sleep hash chain. `proctree_lock` covers
+  the process tree, signals and job control. Lock order: `proctree_lock`,
+  sleep chain, thread, run queue, callout.
+- User priority is `PUSER` plus a nice part and an `estcpu` part. Two busy
+  threads at nice 0 and nice +20 split the CPU about 90/10. `estcpu` decays
+  like in 4.4BSD, using the load of the thread's own CPU.
+- A thread that wakes up goes to the least loaded CPU, preferring its own
+  CPU and the waker's. Cores are filled before hyperthreads (CPUID 0xB,
+  0x8000001E, or leaves 1 and 4).
+- Time slice is `kern.sched.rrinterval` (100 ms). A better thread preempts
+  at the next trap or by IPI. Idle CPUs pull work from the busiest one, and
+  every eight ticks one CPU rebalances. Tunables are `kern.sched.weight*` and
+  `kern.sched.features`, named as in DragonFly.
+- A CPU parked for S3 or S4 hands its queue to the others.
 
-Application Processors start execution in 16-bit Real Mode at physical address `0x7000` (specified by the SIPI vector `0x07`).
+## Per-CPU data
 
-1. **Real Mode Setup:** Loads temporary 16-bit GDT at `0x7000` and enables protected mode (`CR0.PE`).
-2. **32-bit Protected Mode:** Enables Physical Address Extension (`CR4.PAE = 1`).
-3. **Paging:** Loads identity page tables into `CR3`. AP page tables in `kern/mp.c` are mapped strictly with 2 MiB pages to ensure full compatibility across AP architectures that may not support 1 GiB huge pages.
-4. **Long Mode Activation:** Sets `IA32_EFER.LME = 1` via MSR `0xC0000080` and enables paging (`CR0.PG = 1`).
-5. **64-bit Jump:** Jumps to 64-bit trampoline entry point, loads the allocated kernel stack pointer, and calls `mpenter()`.
+`struct cpu_info` is at `%gs:0`. Each core writes its address into
+`IA32_GS_BASE` when it starts, and the trap entry uses `swapgs`. The NMI,
+#DB, #DF and #MC handlers run on their own stacks and read the MSR to see
+whose `%gs` is loaded.
 
----
+An idle CPU sleeps in MWAIT or `hlt` until an interrupt. Every CPU has its
+own local APIC timer. The CPU that gets furthest advances `ticks` and runs
+the callouts. A TLB shootdown also flushes the CPU that starts it and waits
+for all others.
 
-## 4. APIC INIT-SIPI-SIPI Sequence & Timers (`kern/lapic.c`, `kern/delay.c`)
+## Panic
 
-The BSP controls AP startup using the Local APIC Interrupt Command Register (ICR) with timing managed by `kern/delay.c` (calibrated against the i8254 PIT):
+Shutdown and panic stop the other CPUs with an IPI. One CPU panics; a second
+panic on another CPU just stops that CPU. The machine reboots after
+`kern.panic_reboot_wait_time` seconds (default 15, -1 waits for a key). A
+key on the console stops the countdown.
 
-```c
-void lapicstartap(uchar apicid, uint32_t addr) {
-  // 1. Assert INIT Level de-assert
-  lapicw(ICRHI, apicid << 24);
-  lapicw(ICRLO, ICR_INIT | ICR_LEVEL | ICR_ASSERT);
-  delay(200);
-
-  lapicw(ICRLO, ICR_INIT | ICR_LEVEL);
-  delay_ms(10); // 10 ms delay via calibrated PIT
-
-  // 2. Send two Startup IPIs (SIPI) pointing to page vector (addr >> 12)
-  for (int i = 0; i < 2; i++) {
-    lapicw(ICRHI, apicid << 24);
-    lapicw(ICRLO, ICR_STARTUP | (addr >> 12));
-    delay(200);
-  }
-}
-```
-
-### Dynamic Timer Calibration & IPIs
-- **APIC Timer Calibration:** Local APIC timer frequency is dynamically calibrated against the PIT rather than hardcoding static emulation constants.
-- **Halt IPI & Power Management:** The BSP coordinates power transitions and shutdown across all AP cores using dedicated Halt IPIs before executing the hardware reset / ACPI / EFI poweroff sequence.
-
----
-
-## 5. Scheduler & Synchronization
-
-- Each CPU maintains its own private `struct cpu` state containing its Local APIC ID, per-core stack, GDT, TSS with IST stacks, interrupt nesting count (`ncli`), and current process pointer (`proc`).
-- Process scheduling is fully preemptive across cores with per-process and per-subsystem spinlocks (`proc.lock`, `tickslock`, `net_lock`). Kernel scheduler tick frequency is governed by `HZ` in `param.h`.
+AP stacks come from `vmem_alloc` and are kept for S3.

@@ -25,7 +25,6 @@ SECTIONS {
 	__bss_end = .;
 
 	/DISCARD/ : {
-		*(.note.GNU-stack)
 		*(.comment)
 		*(.eh_frame)
 	}

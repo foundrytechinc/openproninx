@@ -1,218 +1,192 @@
-# OpenProninx System Call ABI Reference
+# OpenProninx system calls
 
-> **Architecture:** x86-64 (`int $0x30` — `T_SYSCALL`)  
-> **Calling convention:** syscall number in `%rax`, arguments in `%rdi %rsi %rdx %rcx %r8 %r9`, return value in `%rax`, `-1` on error.
+System calls use `int $0x30`. The number goes in `%rax` and the arguments in
+`%rdi %rsi %rdx %rcx %r8 %r9`. On success the carry flag is clear and `%rax`
+holds the result. On failure the carry flag is set and `%rax` holds an
+`FNU_ERR_*` code from [`inc/error.h`](../inc/error.h). The `libfnu` stubs
+return the result or the negative error. There is no `errno`.
 
----
+Numbers are in [`inc/syscall.h`](../inc/syscall.h). Structures and constants
+are in [`inc/abi.h`](../inc/abi.h), [`inc/open.h`](../inc/open.h),
+[`inc/stat.h`](../inc/stat.h), [`inc/signal.h`](../inc/signal.h) and
+[`inc/dirent.h`](../inc/dirent.h). The signatures below are from
+[`inc/fnu.h`](../inc/fnu.h).
 
-## Tier 1 — Stable Core ABI
+POSIX lives in `libc` on top of these calls. `tests/fnuonly.c` links with
+`libfnu` alone to prove nothing else is needed.
 
-Numbers, signatures, and semantics are **frozen**. Guaranteed backward compatibility across all OpenProninx releases. Binary programs linked against these syscalls will continue to work unchanged.
+Calls that take a path take it relative to a directory descriptor, or
+`FNU_FD_CWD`. A null path means the descriptor itself, so
+`fnu_getattr(fd, 0, 0, &st)` is `fstat`.
 
-### Process Management
+Under `pledge`, each call needs the promises listed for it in
+[`kern/pledge.c`](../kern/pledge.c).
 
-| # | Name | Userland signature | Notes |
-|---|------|--------------------|-------|
-| 0 | `exit` | `void exit(void)` | Terminate process |
-| 5 | `fork` | `int fork(void)` | Clone process; returns 0 in child, child PID in parent |
-| 6 | `wait` | `int wait(void)` | Wait for any child; returns child PID |
-| 27 | `waitpid` | `int waitpid(pid_t pid, int flags)` | Wait for specific child; supports `WNOHANG` (1) |
-| 7 | `kill` | `int kill(pid_t pid)` | Send SIGKILL to process; root & wheel can signal any process, ordinary users only own UID |
-| 8 | `exec` | `int exec(char *path, char **argv)` | Replace process image; last argv must be NULL |
-| 25 | `getpid` | `int getpid(void)` | Return current process ID |
-| 26 | `sleep` | `int sleep(int seconds)` | Sleep for *n* seconds (calibrated via kernel `HZ`) |
+## Processes
 
-### Signals & Machine State
+| # | Signature | Notes |
+|---|-----------|-------|
+| 0 | `void fnu_exit(int status) __attribute__((noreturn))` | the low eight bits are what `fnu_wait` reports; every thread ends |
+| 1 | `int fnu_fork(void)` | 0 in the child, the child's pid in the parent |
+| 2 | `int fnu_exec(const char *path, char *const argv[], char *const envp[])` | the image of a static ELF; descriptors marked `FNU_FD_CLOSEEXEC` are closed |
+| 3 | `pid_t fnu_wait(pid_t pid, struct fnu_exitinfo *out, int flags)` | pid -1 any child, 0 the caller's group, below -1 that group; `FNU_WAIT_NOHANG`, `_STOPPED`, `_CONTINUED`; `out` says why (`FNU_EXIT_*`) and carries the child's usage |
+| 4 | `int fnu_signal(pid_t pid, int sig)` | pid 0 the caller's group, -1 every process it may signal, below -1 a group; signal 0 only asks |
+| 5 | `int fnu_procids(pid_t pid, struct fnu_procids *out)` | pid, parent, group and session of a process, pid 0 the caller |
+| 6 | `pid_t fnu_session_new(void)` | new session and group; fails for a group leader |
+| 7 | `int fnu_pgroup_set(pid_t pid, pid_t pgid)` | into a group of the same session, or a new one; pid 0 the caller, pgid 0 its pid |
+| 8 | `int fnu_ident_get(struct fnu_ident *out)` | real, effective and saved ids, the groups, the session's login name, and whether the ids changed since the last exec |
+| 9 | `int fnu_ident_set(const struct fnu_ident *in, int what)` | `FNU_IDENT_UID` and `_GID` work like setuid(2). `_RUID`, `_EUID`, `_SVUID`, `_RGID`, `_EGID`, `_SVGID` set one id each. `_GROUPS` and `_LOGIN` are root only. All or nothing |
+| 10 | `int fnu_niceness(int whom, int id, int how, int *value)` | `FNU_NICE_PROCESS`, `_GROUP`, `_USER`; `FNU_NICE_GET`, `_SET`, `_ADD`. Only root can lower it |
+| 11 | `uint32_t fnu_createmask(uint32_t mask)` | umask; returns the old one |
+| 12 | `int fnu_limit(int which, const struct fnu_limit *in, struct fnu_limit *out)` | `FNU_LIMIT_*`; `in` and `out` may each be null |
+| 13 | `int fnu_usage(int who, struct fnu_usage *out)` | `FNU_USAGE_SELF` or `FNU_USAGE_CHILDREN` |
+| 14 | `int fnu_timer(int which, const struct fnu_timer *in, struct fnu_timer *out)` | `FNU_TIMER_REAL`, `_VIRTUAL`, `_PROFILE`; as `fnu_limit` |
+| 15 | `int fnu_sleep(const struct fnu_timespec *want, struct fnu_timespec *left)` | a signal interrupts it and `left` has the rest |
+| 16 | `int fnu_halt(int howto)` | `FNU_HALT_*`; init's alone unless `FNU_HALT_FORCE`; root only |
+| 17 | `int fnu_reboot(void)` | asks init; root only |
+| 18 | `int fnu_poweroff(void)` | asks init; root only |
+| 19 | `long fnu_ptrace(int request, pid_t pid, uintptr_t addr, int64_t data)` | the 4.3BSD requests, `PT_*` in abi.h |
 
-| # | Name | Userland signature | Notes |
-|---|------|--------------------|-------|
-| 58 | `signal` | `int signal(pid_t pid, int sig)` | Send signal (`SIGHUP`, `SIGINT`, `SIGKILL`, `SIGTERM`, `SIGUSR1`, `SIGUSR2`); pid `-1` broadcasts |
-| 59 | `sigcatch` | `int sigcatch(uint32_t mask)` | Register signal mask to intercept and catch in userland |
-| 60 | `sigwait` | `int sigwait(struct siginfo *out, int block)` | Retrieve pending signal with PCATCH semantics |
-| 61 | `halt` | `int halt(int howto)` | Request system shutdown (`FNU_RB_HALT`, `FNU_RB_POWEROFF`, `FNU_RB_REBOOT`, `FNU_RB_FORCE`) |
+## Signals
 
-### File System & I/O
+| # | Signature | Notes |
+|---|-----------|-------|
+| 20 | `int fnu_sigact(int sig, const struct fnu_sigact *act, struct fnu_sigact *old)` | handler `FNU_SIGACT_DEFAULT`, `_IGNORE` or an address; a 64-bit mask; `FNU_SIGACT_ONCE`, `_REENTER`, `_RESTART`, `_ALTSTACK` |
+| 21 | `uint64_t fnu_sigmask(uint64_t block, uint64_t unblock)` | blocks, then unblocks; the mask before comes back. `FNU_SIG_KILL` and `FNU_SIG_STOP` are never blocked |
+| 22 | `uint64_t fnu_sigraised(void)` | raised and not yet acted on |
+| 23 | `int fnu_sigtake(uint64_t set, struct fnu_siginfo *out, int block)` | one signal out of `set`, waiting for it when `block` is set |
+| 24 | `int fnu_sigpause(uint64_t mask)` | wait with `mask` until a handler runs; returns `FNU_ERR_INTERRUPTED` |
+| 25 | `fnu_sigreturn` | used by the signal trampoline only |
+| 26 | `int fnu_altstack(const struct fnu_altstack *in, struct fnu_altstack *out)` | `FNU_SIGSTACK_*` |
 
-| # | Name | Userland signature | Notes |
-|---|------|--------------------|-------|
-| 1 | `read` | `ssize_t read(int fd, void *buf, size_t n)` | Read from file descriptor |
-| 2 | `write` | `ssize_t write(int fd, const void *buf, size_t n)` | Write to file descriptor |
-| 3 | `open` | `int open(const char *path, int flags)` | Open file; flags: `O_RDONLY`, `O_WRONLY`, `O_RDWR`, `O_CREATE` |
-| 4 | `close` | `int close(int fd)` | Close file descriptor |
-| 12 | `stat` | `int stat(int fd, struct stat *buf)` | Get file metadata by fd |
-| 13 | `pipe` | `int pipe(int pipefd[2])` | Create unidirectional pipe |
-| 17 | `ioctl` | `int ioctl(int fd, uint64_t cmd, uint64_t arg)` | Terminal/framebuffer control: `TCGETS`/`TCSETS`, `FBIOGET_VSCREENINFO`/`FBIOPUT_VSCREENINFO`, `FBIOGET_MODELIST`/`FBIODUMPMODES` |
-| 18 | `getdents` | `int getdents(int fd, struct linux_dirent64 *buf, int count)` | Read directory entries |
-| 19 | `link` | `int link(const char *old, const char *new)` | Create hard link |
-| 20 | `mkdir` | `int mkdir(const char *path)` | Create directory |
-| 21 | `unlink` | `int unlink(const char *path)` | Remove file or empty directory |
-| 22 | `dup` | `int dup(int oldfd)` | Duplicate file descriptor |
-| 23 | `mknod` | `int mknod(const char *path, int major, int minor)` | Create device node (supports `/dev/ttyN`, `/dev/console`, etc.) |
-| 24 | `chdir` | `int chdir(const char *path)` | Change current directory |
-| 64 | `getcwd` | `int getcwd(char *buf, int size)` | Get absolute path of current working directory |
-| 53 | `chmod` | `int chmod(const char *path, int mode)` | Change permission bits (octal `07777`); owner or root only |
-| 54 | `chown` | `int chown(const char *path, int uid, int gid)` | Change file owner/group; root only |
+## Threads
 
-### Process Security & Terminal Control
+| # | Signature | Notes |
+|---|-----------|-------|
+| 30 | `long fnu_thread_start(const struct fnu_thread_start *start)` | a thread at `entry(arg)` on `stack` with `tcb` as its thread pointer; its id comes back |
+| 31 | `void fnu_thread_exit(uint32_t *cleared) __attribute__((noreturn))` | `*cleared` becomes 0 and its futex waiters are woken; the last thread ends the process |
+| 32 | `long fnu_thread_tcb(uint64_t tcb)` | sets `%fs`; a non-canonical address is `FNU_ERR_INVALID` |
+| 33 | `long fnu_thread_id(void)` | never a pid |
+| 34 | `void fnu_thread_yield(void)` |  |
+| 35 | `long fnu_futex(uint32_t *word, int op, uint32_t val, uint64_t nsec, uint32_t *to)` | `FNU_FUTEX_WAIT` while `*word == val`, `_WAKE` up to `val`, `_REQUEUE`; `FNU_FUTEX_PRIVATE` keys the word by process and address |
 
-| # | Name | Userland signature | Notes |
-|---|------|--------------------|-------|
-| 45 | `getuid` | `int getuid(void)` | Return current process UID |
-| 48 | `setuid` | `int setuid(int uid)` | Set process UID to 0 (root); requires root or `doas_auth` grant |
-| 52 | `setforeground` | `int setforeground(pid_t pid)` | Set foreground PID for console signal dispatch (TTY group leader) |
+## Descriptors
 
-### Memory Management
+| # | Signature | Notes |
+|---|-----------|-------|
+| 40 | `long fnu_read(int fd, const struct fnu_segment *seg, int nseg, int64_t at)` | the segments in order; at `at`, or with `FNU_IO_HERE` at and past the descriptor's own offset |
+| 41 | `long fnu_write(int fd, const struct fnu_segment *seg, int nseg, int64_t at)` | as `fnu_read` |
+| 42 | `long fnu_seek(int fd, int64_t offset, int whence)` | `FNU_SEEK_START`, `_HERE`, `_TAIL`; on a directory the offset is the filesystem's cookie |
+| 43 | `int fnu_close(int fd)` |  |
+| 44 | `int fnu_dup(int fd, int to, int flags)` | the lowest free descriptor at or above `to`; with `FNU_DUP_EXACT` `to` itself, closing what was there. `FNU_FD_CLOSEEXEC` in `flags` |
+| 45 | `int fnu_pipe(int fds[2], int flags)` | `FNU_FD_CLOSEEXEC`, `FNU_FD_NOWAIT`; writes of `FNU_PIPE_ATOMIC` bytes or less are not interleaved |
+| 46 | `int fnu_ioctl(int fd, uint64_t request, uint64_t arg)` | encoded like `sys/ioccom.h`; `FNU_TTY*`, `FNU_KB*`, `FNU_FB*`, mouse, disk and audio requests in abi.h |
+| 47 | `int fnu_fdstate_get(int fd, struct fnu_fdstate *out)` | the descriptor's flags and its file's |
+| 48 | `int fnu_fdstate_set(int fd, const struct fnu_fdstate *in)` |  |
+| 49 | `int fnu_ready(struct fnu_ready *list, int n, const struct fnu_timespec *timeout, const uint32 *mask)` | what each descriptor can do now (`FNU_READY_*`), waiting up to `timeout`; with `mask` the signal mask for the wait alone |
+| 50 | `int fnu_flush(int fd)` | write the file's volume to disk and flush the drive cache; `FNU_FLUSH_ALL` for all volumes |
+| 51 | `long fnu_readdir(int fd, void *buf, int size, int64_t *basep)` | `struct fnu_dirent` records, each padded to eight bytes; `basep` takes the offset the read began at |
+| 52 | `int fnu_eventq(int flags)` | new event queue (like kqueue); not inherited by fork |
+| 53 | `int fnu_events(int fd, const struct fnu_event *changes, int nchanges, struct fnu_event *out, int room, const struct fnu_timespec *timeout)` | like kevent. Filters `FNU_EVF_READ`, `_WRITE`, `_FILE`, `_PROC`, `_SIGNAL`, `_TIMER`. Errors come back as `FNU_EV_ERROR` |
 
-| # | Name | Userland signature | Notes |
-|---|------|--------------------|-------|
-| 9 | `sbrk` | `void *sbrk(intptr_t increment)` | Grow/shrink process data segment |
-| 10 | `malloc` | `void *malloc(size_t size)` | Kernel-assisted heap allocation (grows address space) |
-| 11 | `free` | `void free(void *ptr)` | No-op; preserved for ABI compatibility |
+## Names
 
-### System Information & Hardware Inventory
+| # | Signature | Notes |
+|---|-----------|-------|
+| 60 | `int fnu_open(int dirfd, const char *path, int flags, int mode)` | `FNU_OPEN_*`; `mode` only for a file it makes |
+| 61 | `int fnu_getattr(int dirfd, const char *path, int flags, struct fnu_stat *st)` | with no path, whatever `dirfd` is open on; `FNU_PATH_NOFOLLOW` asks about a final link itself |
+| 62 | `int fnu_setattr(int dirfd, const char *path, int flags, const struct fnu_setattr *attr)` | `FNU_SET_SIZE`, `_MODE`, `_UID`, `_GID`, `_FLAGS`, `_ATIME`, `_MTIME`. `FNU_TIME_NOW` and `FNU_TIME_KEEP` go in `nsec` |
+| 63 | `int fnu_make(int dirfd, const char *path, int type, int mode, const char *target)` | `FNU_TYPE_DIR`, `FNU_TYPE_FIFO` or `FNU_TYPE_LINK` to `target` |
+| 64 | `int fnu_remove(int dirfd, const char *path, int flags)` | a name; a directory, empty, only with `FNU_REMOVE_DIR` |
+| 65 | `int fnu_link(int fromfd, const char *from, int tofd, const char *to, int flags)` | a second name; a final link of `from` is followed only with `FNU_PATH_FOLLOW`; not on FAT |
+| 66 | `int fnu_rename(int fromfd, const char *from, int tofd, const char *to)` | within one volume |
+| 67 | `long fnu_readlink(int dirfd, const char *path, char *buf, int size)` | the length of what the link says; no terminator |
+| 68 | `int fnu_chdir(int dirfd, const char *path)` | with no path, the directory `dirfd` is open on |
+| 69 | `int fnu_access(int dirfd, const char *path, int how, int flags)` | `FNU_ACCESS_READ`, `_WRITE`, `_EXEC` for the effective user, or with `FNU_ACCESS_REAL` the real one |
+| 70 | `int64_t fnu_pathconf(int dirfd, const char *path, int flags, int name)` | `FNU_PC_*`: what the filesystem under the name can do |
+| 71 | `int fnu_pathof(int dirfd, const char *path, char *buf, int size)` | the absolute name, every link in it followed; with no path that of `dirfd` |
+| 72 | `int fnu_mount(const struct fnu_mount_req *request)` | root only; type `ufs2`, `fat32`, or empty to read the device |
+| 73 | `int fnu_unmount(const char *on, unsigned int flags)` | `FNU_MNT_FORCE` |
+| 74 | `int fnu_fsstat(struct fnu_fsstat *buf, int capacity)` | one entry a mounted volume; capacity 0 returns the count |
+| 75 | `int fnu_swapon(const char *device)` | a block device; root only |
+| 76 | `int fnu_swapoff(void)` | root only |
+| 77 | `int fnu_unveil(const char *path, const char *permissions)` | OpenBSD's unveil: `r`, `w`, `x`, `c`; both null locks it |
 
-| # | Name | Userland signature | Notes |
-|---|------|--------------------|-------|
-| 14 | `info` | `int info(struct info *buf)` | Fill `struct info` with uptime, RAM stats, process count |
-| 15 | `reboot` | `int reboot(void)` | System reboot via `init` ladder (or keyboard/ACPI/EFI reset) |
-| 16 | `procinfo` | `int procinfo(struct procinfo *buf, int capacity)` | Fill array of `struct procinfo`; returns count |
-| 55 | `poweroff` | `int poweroff(void)` | ACPI/EFI shutdown via `init` ladder |
-| 62 | `hwinfo` | `int hwinfo(struct hwinfo *buf)` | Fill hardware inventory: CPU brand, cores, frequencies, VRAM, PCI stats |
-| 63 | `diskinfo` | `int diskinfo(struct diskinfo *buf, int capacity)` | Fill block device info: model, serial, sector size, SATA/NVMe kind, sectors |
+## Memory
 
-### Network Subsystem (lwIP slot-handle API)
+| # | Signature | Notes |
+|---|-----------|-------|
+| 80 | `long fnu_map(void *addr, size_t len, int prot, int flags, int fd, int64_t offset)` | `FNU_MEM_READ`, `_WRITE`, `_EXEC`; `FNU_MEM_SHARED` or `_PRIVATE`, `_ANON`, `_FIXED`; the address comes back |
+| 81 | `int fnu_unmap(void *addr, size_t len)` |  |
+| 82 | `int fnu_protect(void *addr, size_t len, int prot)` | W^X |
+| 83 | `int fnu_memsync(void *addr, size_t len, int flags)` | msync; `FNU_MEMSYNC_WAIT` or `_START` |
+| 84 | `int fnu_memuse(void *addr, size_t len, int advice)` | madvise; `FNU_MEMUSE_*` |
 
-> **Design note:** Uses integer *slot handles* (not POSIX file descriptors).
+## Sockets
 
-| # | Name | Userland signature | Notes |
-|---|------|--------------------|-------|
-| 28 | `ping` | `int ping(struct network_ping_request *)` | ICMP echo; fills `round_trip_ms` on success |
-| 29 | `udp_open` | `int udp_open(void)` | Allocate a UDP slot handle |
-| 30 | `udp_bind` | `int udp_bind(int handle, int port)` | Bind UDP slot to local port |
-| 31 | `udp_sendto` | `int udp_sendto(int h, const void *buf, int n, const struct network_endpoint *)` | Send UDP datagram |
-| 32 | `udp_recvfrom` | `int udp_recvfrom(int h, void *buf, int n, struct network_endpoint *, int timeout_ms)` | Receive UDP datagram |
-| 33 | `udp_close` | `int udp_close(int handle)` | Release UDP slot |
-| 34 | `netinfo` | `int netinfo(struct network_status *)` | Read primary network interface status |
-| 35 | `netconfig` | `int netconfig(struct network_ipv4_config *)` | Apply static IP or restart DHCP |
-| 36 | `tcp_open` | `int tcp_open(void)` | Allocate a TCP slot handle |
-| 37 | `tcp_bind` | `int tcp_bind(int h, int port)` | Bind TCP slot to local port |
-| 38 | `tcp_listen` | `int tcp_listen(int h)` | Mark slot as passive listener |
-| 39 | `tcp_accept` | `int tcp_accept(int h, int timeout_ms)` | Accept incoming connection; returns new handle |
-| 40 | `tcp_connect` | `int tcp_connect(int h, const struct network_endpoint *, int timeout_ms)` | Connect to remote endpoint |
-| 41 | `tcp_send` | `int tcp_send(int h, const void *buf, int n)` | Send TCP data |
-| 42 | `tcp_recv` | `int tcp_recv(int h, void *buf, int n, int timeout_ms)` | Receive TCP data |
-| 43 | `tcp_close` | `int tcp_close(int handle)` | Close TCP connection and release slot |
-| 44 | `dns_resolve` | `int dns_resolve(struct network_dns_request *)` | Resolve hostname to IPv4 address |
+| # | Signature | Notes |
+|---|-----------|-------|
+| 90 | `int fnu_socket(int domain, int type, int protocol)` | `FNU_NET_INET` or `FNU_NET_LOCAL`; `FNU_SOCKET_*` |
+| 91 | `int fnu_socketpair(int domain, int type, int protocol, int fds[2])` | a connected pair of local sockets |
+| 92 | `int fnu_bind(int fd, const void *addr, int len)` | port 0 picks one |
+| 93 | `int fnu_listen(int fd, int backlog)` |  |
+| 94 | `int fnu_accept(int fd, void *from, int *len)` | `from` may be null |
+| 95 | `int fnu_connect(int fd, const void *addr, int len)` | on a datagram socket sets the default peer |
+| 96 | `long fnu_send(int fd, const struct fnu_msg *msg, int flags)` | like sendmsg; descriptors only over local sockets; `FNU_SEND_*` |
+| 97 | `long fnu_recv(int fd, struct fnu_msg *msg, int flags)` | like recvmsg; `FNU_RECV_*`; 0 is end of stream |
+| 98 | `int fnu_shutdown(int fd, int how)` | `FNU_SHUTDOWN_READ`, `_WRITE`, `_BOTH` |
+| 99 | `int fnu_sockaddr(int fd, int which, void *out, int *len)` | `FNU_SOCKADDR_LOCAL` or `_PEER` |
+| 100 | `int fnu_sockopt_set(int fd, int opt, const void *val, uint32_t len)` | `FNU_SOCKOPT_*` |
+| 101 | `int fnu_sockopt_get(int fd, int opt, void *val, uint32_t *len)` |  |
 
-### System Time
+## The machine
 
-| # | Name | Userland signature | Notes |
-|---|------|--------------------|-------|
-| 56 | `rtctime` | `int rtctime(struct rtctime *t)` | Read CMOS RTC; all fields binary (not BCD) |
+| # | Signature | Notes |
+|---|-----------|-------|
+| 110 | `int fnu_info(struct fnu_info *inf)` | uptime, memory, swap, process count, load average |
+| 111 | `int fnu_procinfo(struct fnu_procinfo *pi, int capacity)` | every process; capacity 0 returns the count |
+| 112 | `int fnu_hwinfo(struct fnu_hwinfo *hw)` |  |
+| 113 | `int fnu_diskinfo(struct fnu_diskinfo *buf, int capacity)` | every disk; capacity 0 returns the count |
+| 114 | `int fnu_netinfo(struct fnu_ifinfo *buf, int capacity)` | every interface; capacity 0 returns the count |
+| 115 | `int fnu_netconfig(struct fnu_ifconfig *config)` | an address, or a lease asked for; root only |
+| 118 | `int fnu_rtctime(struct fnu_rtctime *t)` | broken down, from the battery clock |
+| 119 | `int fnu_gettime(struct fnu_timespec *t, int which)` | `FNU_CLOCK_WALL` or `_UPTIME`; with `FNU_CLOCK_GRAIN` the clock's step |
+| 120 | `int fnu_random(void *buf, size_t len)` | at most 256 bytes |
+| 121 | `int fnu_sysctl(const char *name, void *old, uint64_t *oldlen, const void *new, uint64_t newlen)` | by dotted name; writing needs root and no pledge |
+| 122 | `int fnu_sysctlnode(int index, struct fnu_sysctl_info *info)` | walk all nodes by index |
+| 123 | `int fnu_pledge(const char *promises, const char *execpromises)` | OpenBSD's pledge |
+| 124 | `int fnu_sendsyslog(const char *buf, size_t len, int flags)` | to syslogd; `FNU_LOG_CONSOLE` falls back to the console |
+| 125 | `int fnu_settime(const struct fnu_timespec *now)` | sets the clock and the RTC; root only |
+| 126 | `int fnu_slewtime(const struct fnu_timespec *delta, struct fnu_timespec *left)` | adjtime at 5000 ppm |
 
-### Storage Information
-
-| # | Name | Userland signature | Notes |
-|---|------|--------------------|-------|
-| 57 | `df` | `int df(struct df_stat *buf)` | Fill up to `DF_ENTRIES_MAX` (4) entries; returns count |
-
-### Stable ABI Data Structures (`inc/abi.h` & `inc/signal.h`)
-
-```c
-struct info        { uint64 uptime; uint64 total_ram; uint64 free_ram; uint32 nprocs; };
-struct procinfo    { pointer_t pid; proc_state_t state; char name[16]; pointer_t memory_size; };
-struct linux_dirent64 { uint64 d_ino; int64 d_off; unsigned short d_reclen;
-                        unsigned char d_type; char d_name[]; };
-struct termios     { uint32 c_iflag; uint32 c_oflag; uint32 c_cflag; uint32 c_lflag;
-                     uint8 c_line; uint8 c_cc[19]; };
-struct fb_var_screeninfo { uint32 xres; uint32 yres; uint32 bits_per_pixel; };
-struct fb_modelist { uint32 count; struct { uint16 width, height, bpp; } mode[96]; };
-
-struct network_ping_request { uint8 address[4]; uint32 timeout_ms; uint32 round_trip_ms; };
-struct network_endpoint     { uint8 address[4]; uint16 port; };
-struct network_ipv4_config  { uint8 address[4]; uint8 netmask[4]; uint8 gateway[4];
-                              uint8 dns_server[4]; uint32 dhcp; };
-struct network_dns_request  { char name[64]; uint8 address[4]; uint32 timeout_ms; };
-struct network_status       { char interface_name[16]; uint8 hardware_address[6];
-                              uint8 address[4]; uint8 gateway[4]; uint8 dns_server[4];
-                              uint32 dhcp_bound; uint64 received_frames;
-                              uint64 dropped_frames; uint64 transmitted_frames; };
-
-struct rtctime { uint8 sec; uint8 min; uint8 hour; uint8 wday;
-                 uint8 mday; uint8 mon; uint16 year; };
-
-#define DF_ENTRIES_MAX 4
-struct df_stat { char label[24]; char mount_point[32];
-                 uint64 total_bytes; uint64 used_bytes; uint64 free_bytes;
-                 uint8 is_read_only; uint8 is_present; uint8 _pad[6]; };
-
-struct hwinfo {
-  char     cpu_brand[49];
-  char     cpu_vendor[13];
-  uint8    pad0[2];
-  uint32   cpu_count, cpu_family, cpu_model, cpu_stepping;
-  uint64   tsc_hz, cpu_base_hz, cpu_max_hz;
-  uint32   fb_width, fb_height, fb_bpp, fb_columns, fb_rows;
-  uint32   pci_devices, pci_total, fb_modeset, fb_source, pad1;
-  uint64   fb_vram, ram_total, ram_free;
-};
-
-struct diskinfo {
-  char     model[41];
-  char     serial[21];
-  uint8    kind, pad0[1];
-  uint32   sector_size, link_gen, pad1;
-  uint64   sectors;
-};
-
-struct siginfo { int32_t signo; int32_t reserved; pid_t sender; };
-```
-
----
-
-## Tier 2 — Experimental / Non-ABI
-
-These syscalls are **fully functional** but their numbers, signatures, or structures may change in a future release without prior notice.
-
-### In-Kernel Authentication
-
-> **Design note:** Password hashing (SHA-256), account storage, and credential verification currently reside inside the kernel (`kern/auth.c`). A future release will move these to userspace (PAM / `libcrypt` / `/etc/shadow`). The syscall numbers are reserved; do not rely on their semantics remaining stable.
-
-| # | Name | Notes |
-|---|------|-------|
-| 46 | `login` | Authenticate `name`+`password`; sets process UID/GID on success |
-| 47 | `doas_auth` | Grant temporary root-elevation token; verified by `setuid` |
-| 49 | `useradd` | Create new account; root only |
-| 50 | `passwd` | Change password for a user |
-| 51 | `users` | Enumerate accounts by index into `struct user_info` |
-
----
-
-## Syscall Number Quick Reference
+## Numbers
 
 ```
- 0  exit          1  read          2  write         3  open
- 4  close         5  fork          6  wait          7  kill
- 8  exec          9  sbrk         10  malloc        11  free
-12  stat         13  pipe         14  info          15  reboot
-16  procinfo     17  ioctl        18  getdents      19  link
-20  mkdir        21  unlink       22  dup           23  mknod
-24  chdir        25  getpid       26  sleep         27  waitpid
-28  ping         29  udp_open     30  udp_bind      31  udp_sendto
-32  udp_recvfrom 33  udp_close    34  netinfo       35  netconfig
-36  tcp_open     37  tcp_bind     38  tcp_listen    39  tcp_accept
-40  tcp_connect  41  tcp_send     42  tcp_recv      43  tcp_close
-44  dns_resolve  45  getuid       46* login         47* doas_auth
-48  setuid       49* useradd      50* passwd        51* users
-52  setforeground 53 chmod        54  chown         55  poweroff
-56  rtctime      57  df           58  signal        59  sigcatch
-60  sigwait      61  halt         62  hwinfo        63  diskinfo
-64  getcwd
+0   exit           1   fork           2   exec           3   wait
+4   signal         5   procids        6   session_new    7   pgroup_set
+8   ident_get      9   ident_set      10  niceness       11  createmask
+12  limit          13  usage          14  timer          15  sleep
+16  halt           17  reboot         18  poweroff       19  ptrace
+20  sigact         21  sigmask        22  sigraised      23  sigtake
+24  sigpause       25  sigreturn      26  altstack       30  thread_start
+31  thread_exit    32  thread_tcb     33  thread_id      34  thread_yield
+35  futex          40  read           41  write          42  seek
+43  close          44  dup            45  pipe           46  ioctl
+47  fdstate_get    48  fdstate_set    49  ready          50  flush
+51  readdir        52  eventq         53  events         60  open
+61  getattr        62  setattr        63  make           64  remove
+65  link           66  rename         67  readlink       68  chdir
+69  access         70  pathconf       71  pathof         72  mount
+73  unmount        74  fsstat         75  swapon         76  swapoff
+77  unveil         80  map            81  unmap          82  protect
+83  memsync        84  memuse         90  socket         91  socketpair
+92  bind           93  listen         94  accept         95  connect
+96  send           97  recv           98  shutdown       99  sockaddr
+100 sockopt_set    101 sockopt_get    110 info           111 procinfo
+112 hwinfo         113 diskinfo       114 netinfo        115 netconfig
+118 rtctime        119 gettime        120 random         121 sysctl
+122 sysctlnode     123 pledge         124 sendsyslog     125 settime
+126 slewtime
 ```
 
-> Total syscall count: **65** (`PRONINX_SYSCALL_COUNT`).  
-> `*` = EXPERIMENTAL (Tier 2, 5 syscalls). All other 60 syscalls are **Stable Core ABI** (Tier 1).
-
----
-
-*See also: [`inc/syscall.h`](../inc/syscall.h) (definitive table), [`inc/abi.h`](../inc/abi.h) (stable ABI data structures), [`inc/signal.h`](../inc/signal.h) (signal definitions).*
+There are 128 slots. Unlisted numbers are not used.

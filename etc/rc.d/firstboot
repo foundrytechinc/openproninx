@@ -1,0 +1,4 @@
+desc=one-time setup on first boot
+stage=boot
+requires=mountall var
+step=if [ -f /firstboot ] && [ -f /etc/firstboot ]; then /usr/bin/sh /etc/firstboot && rm -f /firstboot; fi

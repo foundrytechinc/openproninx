@@ -5,9 +5,43 @@
 #include "fs.h"
 #include "inc/bootinfo.h"
 #include "memlayout.h"
+#include "mmu.h"
+#include "param.h"
 
 static char *ramdisk_data;
 static uint64_t ramdisk_sectors;
+static int ramdisk_major;
+
+static uint64_t ramdisk_unit_size(uint unit) {
+  return unit == 0 ? ramdisk_sectors : 0;
+}
+
+static uint ramdisk_maxphys(uint unit) {
+  (void)unit;
+  return MAXPHYS;
+}
+
+static int ramdisk_memory(uint unit) {
+  (void)unit;
+  return 1;
+}
+
+static int ramdisk_ident(uint unit __unused, struct fnu_diskinfo *out) {
+  strlcpy(out->model, "ramdisk", FNU_DISK_MODEL_MAX);
+  out->kind = FNU_DISK_RAMDISK;
+  return 0;
+}
+
+static const struct blockdrv ramdisk_blockdrv = {
+    .name = "ramdisk",
+    .prefix = "rd",
+    .units = 1,
+    .strategy = ramdiskrw,
+    .maxphys = ramdisk_maxphys,
+    .size = ramdisk_unit_size,
+    .memory = ramdisk_memory,
+    .ident = ramdisk_ident,
+};
 
 void ramdisk_init(void) {
   const struct fnu_bootinfo *bi = bootinfo();
@@ -22,11 +56,14 @@ void ramdisk_init(void) {
       break;
     ramdisk_data = (char *)P2V((uintptr_t)bi->module[i].base);
     ramdisk_sectors = bi->module[i].size / FNU_BLOCKDEV_SECTOR_SIZE;
-    cprintf("RAMDISK: rootfs from loader (%u sectors, %u KB)\n",
-            (uint)ramdisk_sectors, (uint)(bi->module[i].size / 1024));
+    ramdisk_major = blockdev_register(&ramdisk_blockdrv);
+    if (ramdisk_major != 0)
+      rootdev = makedev(ramdisk_major, 0);
+    printf("RAMDISK: rootfs from loader (%u sectors, %u KB), device %d,0\n",
+            (uint)ramdisk_sectors, (uint)(bi->module[i].size / 1024),
+            ramdisk_major);
     return;
   }
-  cprintf("RAMDISK: loader supplied no rootfs\n");
 }
 
 uint64_t ramdisk_size(void) { return ramdisk_sectors; }
@@ -41,21 +78,22 @@ void ramdiskrw(struct buf *b) {
   if ((b->flags & (B_VALID | B_DIRTY)) == B_VALID)
     panic("ramdiskrw: nothing to do");
 
-  if (ramdisk_data == 0 || ramdisk_sectors == 0)
-    panic("ramdiskrw: no ramdisk present");
+  uint bytes = bufcount(b);
+  uint sectors = bytes / FNU_BLOCKDEV_SECTOR_SIZE;
+  uint64_t sector = b->blockno * (BSIZE / FNU_BLOCKDEV_SECTOR_SIZE);
 
-  uint sectors_per_block = BSIZE / FNU_BLOCKDEV_SECTOR_SIZE;
-  uint64_t sector = (uint64_t)b->blockno * sectors_per_block;
+  if (minor(b->dev) != 0 || ramdisk_data == 0 ||
+      sector + sectors > ramdisk_sectors) {
+    b->flags |= B_ERROR;
+    return;
+  }
 
-  if (sector + sectors_per_block > ramdisk_sectors)
-    panic("ramdiskrw: sector beyond ramdisk");
-
-  char *target = ramdisk_data + ((uint64_t)b->blockno * BSIZE);
+  char *target = ramdisk_data + b->blockno * BSIZE;
 
   if (b->flags & B_DIRTY) {
-    memmove(target, b->data, BSIZE);
+    memmove(target, bufdata(b), bytes);
   } else {
-    memmove(b->data, target, BSIZE);
+    memmove(bufdata(b), target, bytes);
   }
 
   b->flags |= B_VALID;

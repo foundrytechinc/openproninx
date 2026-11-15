@@ -1,0 +1,4 @@
+FNU/OpenProninx Core 0.1.8-dev
+
+Welcome. Run fnufetch for a summary of the machine.
+Without an fnu-root partition the root is a ramdisk and is lost at reboot.

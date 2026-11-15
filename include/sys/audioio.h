@@ -1,0 +1,10 @@
+#ifndef _SYS_AUDIOIO_H_
+#define _SYS_AUDIOIO_H_
+
+#include <sys/ioctl.h>
+
+#define AUDIO_GETPAR FNU_AUDIOGETPAR
+#define AUDIO_SETPAR FNU_AUDIOSETPAR
+#define AUDIO_GETINFO FNU_AUDIOGETINFO
+
+#endif

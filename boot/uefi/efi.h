@@ -1,20 +1,17 @@
 #ifndef PRONINX_BOOT_UEFI_EFI_H
 #define PRONINX_BOOT_UEFI_EFI_H
 
-/*
- * The slice of UEFI 2.10 this loader speaks. Written against the published
- * specification, so nothing here is derived from EDK2 or gnu-efi.
- */
+// the slice of UEFI 2.10 this loader speaks
 
 #include "inc/types.h"
-
-#define EFIAPI __attribute__((ms_abi))
 
 typedef uint64 efi_status;
 typedef uint64 efi_uintn;
 typedef void *efi_handle;
 typedef uint64 efi_phys;
 typedef uint16 efi_char;
+
+struct efi_device_path;
 
 struct efi_guid {
   uint32 a;
@@ -81,6 +78,17 @@ struct efi_table_header {
   uint32 reserved;
 };
 
+struct efi_input_key {
+  uint16 scan;
+  efi_char unicode;
+};
+
+struct efi_text_input {
+  efi_status(EFIAPI *reset)(struct efi_text_input *, uint8);
+  efi_status(EFIAPI *read_key_stroke)(struct efi_text_input *, struct efi_input_key *);
+  void *wait_for_key;
+};
+
 struct efi_text_output {
   efi_status(EFIAPI *reset)(struct efi_text_output *, uint8);
   efi_status(EFIAPI *output_string)(struct efi_text_output *, efi_char *);
@@ -96,7 +104,6 @@ struct efi_text_output {
   void *mode;
 };
 
-// the table is fixed by the specification; every entry stays, used or not
 struct efi_boot_services {
   struct efi_table_header hdr;
 
@@ -132,7 +139,9 @@ struct efi_boot_services {
   efi_status(EFIAPI *locate_handle)(uint32 search, const struct efi_guid *proto,
                                     void *key, efi_uintn *size,
                                     efi_handle *buffer);
-  void *locate_device_path;
+  efi_status(EFIAPI *locate_device_path)(const struct efi_guid *proto,
+                                         struct efi_device_path **path,
+                                         efi_handle *device);
   void *install_configuration_table;
 
   void *load_image;
@@ -181,7 +190,7 @@ struct efi_system_table {
   uint32 firmware_revision;
   uint32 pad;
   efi_handle console_in_handle;
-  void *con_in;
+  struct efi_text_input *con_in;
   efi_handle console_out_handle;
   struct efi_text_output *con_out;
   efi_handle standard_error_handle;
@@ -195,6 +204,23 @@ struct efi_system_table {
 #define EFI_LOADED_IMAGE_GUID                                                  \
   { 0x5b1b31a1, 0x9562, 0x11d2,                                                \
     {0x8e, 0x3f, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b} }
+
+#define EFI_DEVICE_PATH_GUID                                                   \
+  { 0x09576e91, 0x6d3f, 0x11d2,                                                \
+    {0x8e, 0x39, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b} }
+
+struct efi_device_path {
+  uint8 type;
+  uint8 subtype;
+  uint8 length[2];
+};
+#define EFI_DP_MEDIA 4
+#define EFI_DP_HARDDRIVE 1
+#define EFI_DP_END 0x7f
+#define EFI_DP_END_ENTIRE 0xff
+#define EFI_DP_HD_SIG 24
+#define EFI_DP_HD_SIGTYPE 41
+#define EFI_DP_SIG_GUID 2
 
 struct efi_loaded_image {
   uint32 revision;
@@ -210,6 +236,33 @@ struct efi_loaded_image {
   uint32 image_code_type;
   uint32 image_data_type;
   void *unload;
+};
+
+#define EFI_BLOCK_IO_GUID                                                      \
+  { 0x964e5b21, 0x6459, 0x11d2,                                                \
+    {0x8e, 0x39, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b} }
+
+struct efi_block_io_media {
+  uint32 media_id;
+  uint8 removable_media;
+  uint8 media_present;
+  uint8 logical_partition;
+  uint8 read_only;
+  uint8 write_caching;
+  uint8 pad[3];
+  uint32 block_size;
+  uint32 io_align;
+  uint64 last_block;
+};
+
+struct efi_block_io {
+  uint64 revision;
+  struct efi_block_io_media *media;
+  void *reset;
+  efi_status(EFIAPI *read_blocks)(struct efi_block_io *, uint32 media_id,
+                                  uint64 lba, efi_uintn size, void *buffer);
+  void *write_blocks;
+  void *flush_blocks;
 };
 
 #define EFI_SIMPLE_FILE_SYSTEM_GUID                                            \
@@ -284,6 +337,12 @@ _Static_assert(sizeof(struct efi_time) == 16, "efi_time");
   { 0x1c0c34f6, 0xd380, 0x41fa,                                                \
     {0xa0, 0x49, 0x8a, 0xd0, 0x6c, 0x1a, 0x66, 0xaa} }
 
+#define EFI_HOB_LIST_GUID                                                      \
+  {0x7739f24c, 0x93d7, 0x11d4, {0x9a, 0x3a, 0x00, 0x90, 0x27, 0x3f, 0xc1, 0x4d}}
+#define EFI_SMBIOS3_TABLE_GUID                                                 \
+  {0xf2fd1544, 0x9794, 0x4a2c, {0x99, 0x2e, 0xe5, 0xbb, 0xcf, 0x20, 0xe3, 0x94}}
+#define EFI_SMBIOS_TABLE_GUID                                                  \
+  {0xeb9d2d31, 0x2d88, 0x11d3, {0x9a, 0x16, 0x00, 0x90, 0x27, 0x3f, 0xc1, 0x4d}}
 #define EFI_ACPI_20_TABLE_GUID                                                 \
   { 0x8868e871, 0xe4f1, 0x11d3,                                                \
     {0xbc, 0x22, 0x00, 0x80, 0xc7, 0x3c, 0x88, 0x81} }
@@ -334,6 +393,42 @@ struct efi_graphics_output {
 struct efi_edid {
   uint32 size;
   uint8 *edid;
+};
+
+#define EFI_PCI_IO_GUID                                                        \
+  {0x4cf5b200, 0x68b8, 0x4ca5, {0x9e, 0xec, 0xb2, 0x3e, 0x3f, 0x50, 0x02, 0x9a}}
+
+#define EFI_PCI_IO_WIDTH_UINT32 2
+
+struct efi_pci_io;
+
+struct efi_pci_io_access {
+  efi_status(EFIAPI *read)(struct efi_pci_io *, uint32 width, uint32 offset,
+                           efi_uintn count, void *buffer);
+  efi_status(EFIAPI *write)(struct efi_pci_io *, uint32 width, uint32 offset,
+                            efi_uintn count, void *buffer);
+};
+
+struct efi_pci_io {
+  void *poll_mem;
+  void *poll_io;
+  struct efi_pci_io_access mem;
+  struct efi_pci_io_access io;
+  struct efi_pci_io_access pci;
+  void *copy_mem;
+  void *map;
+  void *unmap;
+  void *allocate_buffer;
+  void *free_buffer;
+  void *flush;
+  efi_status(EFIAPI *get_location)(struct efi_pci_io *, efi_uintn *segment,
+                                   efi_uintn *bus, efi_uintn *device,
+                                   efi_uintn *function);
+  void *attributes;
+  void *get_bar_attributes;
+  void *set_bar_attributes;
+  uint64 rom_size;
+  void *rom_image;
 };
 
 #endif

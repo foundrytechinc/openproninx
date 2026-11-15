@@ -1,5 +1,4 @@
-// BIOS services, called from 32 bit code through the real mode thunk.
-// cdecl: args on the stack, result in %eax.
+// BIOS SERVICES, cdecl
 
 	.text
 	.code32
@@ -23,6 +22,44 @@ bios_putc:
 	.code32
 
 	xorl	%eax, %eax
+	LEAVE
+
+// int bios_getkey(void) - the character waiting, or -1
+	.globl	bios_getkey
+bios_getkey:
+	ENTER
+
+	call	prot_to_real
+	.code16
+	movl	$-1, %ebx
+	movb	$0x01, %ah
+	int	$0x16
+	jz	1f
+	xorb	%ah, %ah
+	int	$0x16
+	movzbl	%al, %ebx
+1:
+	calll	real_to_prot
+	.code32
+
+	movl	%ebx, %eax
+	LEAVE
+
+// void bios_wait(int us) - int 15h 86h
+	.globl	bios_wait
+bios_wait:
+	ENTER
+	movl	8(%ebp), %edx
+	movl	%edx, %ecx
+	shrl	$16, %ecx
+
+	call	prot_to_real
+	.code16
+	movb	$0x86, %ah
+	int	$0x15
+	calll	real_to_prot
+	.code32
+
 	LEAVE
 
 // int bios_disk_extcheck(int drive)
@@ -79,7 +116,24 @@ bios_disk_read:
 	movzwl	%bx, %eax
 	LEAVE
 
-// int bios_disk_params(int drive, struct bios_drive_params *)
+// int bios_disk_reset(int drive)
+	.globl	bios_disk_reset
+bios_disk_reset:
+	ENTER
+	movl	8(%ebp), %edx
+
+	call	prot_to_real
+	.code16
+	xorb	%ah, %ah
+	int	$0x13
+	setc	%bl
+	calll	real_to_prot
+	.code32
+
+	movzbl	%bl, %eax
+	LEAVE
+
+// drive params. whatever the bios says
 	.globl	bios_disk_params
 bios_disk_params:
 	ENTER
@@ -106,7 +160,7 @@ bios_disk_params:
 	movzbl	%bl, %eax
 	LEAVE
 
-// int bios_e820(uint32 *cont, void *buf) - 0 ok, -1 done or unsupported
+// e820. 0 ok, -1 done, or the bios is dumb
 	.globl	bios_e820
 bios_e820:
 	ENTER
@@ -196,7 +250,7 @@ bios_vbe_mode_info:
 	movzwl	%ax, %eax
 	LEAVE
 
-// int bios_vbe_edid(void *buf) - VBE/DDC, 128 byte EDID block
+// EDID over VBE/DDC: 128 bytes of hope
 	.globl	bios_vbe_edid
 bios_vbe_edid:
 	ENTER
@@ -224,7 +278,7 @@ bios_vbe_edid:
 	movzwl	%ax, %eax
 	LEAVE
 
-// int bios_vbe_get_mode(void) - current mode in the low word, 0xffff on failure
+// ???
 	.globl	bios_vbe_get_mode
 bios_vbe_get_mode:
 	ENTER
@@ -261,5 +315,3 @@ bios_vbe_set_mode:
 
 	movzwl	%ax, %eax
 	LEAVE
-
-	.section .note.GNU-stack,"",@progbits

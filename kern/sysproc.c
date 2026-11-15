@@ -1,529 +1,654 @@
 #include "buf.h"
 #include "defs.h"
+#include "memlayout.h"
 #include "file.h"
 #include "fs.h"
+#include "net/if.h"
+#include "net/inet.h"
 #include "inc/abi.h"
 #include "inc/stat.h"
 #include "inc/signal.h"
+#include "inc/syscall.h"
+#include "sched.h"
+#include "malloc.h"
 #include "param.h"
 #include "proc.h"
+#include "pathname.h"
 #include "ufs2.h"
+#include "unveil.h"
+#include "vfs.h"
+#include "blockdev.h"
 #include "x86.h"
 
-int64_t sys_info(void) {
-  struct info *inf;
-  if (argptr(0, (char **)&inf, sizeof(*inf)) < 0)
-    return -1;
+int sys_info(struct proc *p, const register_t *uap, register_t *retval __unused) {
+  struct fnu_info inf;
+  uint64_t dst;
 
-  inf->uptime = ticks;
-  inf->total_ram = get_total_ram();
-  inf->free_ram = get_free_ram();
-  inf->nprocs = (uint32_t)get_nprocs();
+  dst = uap[0];
+
+  memset(&inf, 0, sizeof(inf));
+  inf.uptime = ticks;
+  inf.total_ram = get_total_ram();
+  inf.free_ram = get_free_ram();
+  swap_stats(&inf.swap_total, &inf.swap_used, &inf.swap_outs, &inf.swap_ins);
+  inf.nprocs = (uint32_t)get_nprocs();
+  sched_loadavg(inf.loadavg);
+  if (copyout(p->p_p->pgdir, (uintptr_t)dst, &inf, sizeof(inf)) < 0)
+    return FNU_ERR_FAULT;
   return 0;
 }
 
-// reboot and poweroff ask init. halt(2) is what pulls the plug.
-static int64_t request_shutdown(int sig) {
-  if (myproc()->uid != 0 && !auth_is_wheel(myproc()->uid))
-    return -1;
+static int request_shutdown(struct proc *p, int sig) {
+  if (p->p_p->uid != 0)
+    return FNU_ERR_NOTPERMITTED;
   return kill(1, sig);
 }
 
-int64_t sys_reboot(void) { return request_shutdown(SIGINT); }
+int sys_reboot(struct proc *p, const register_t *uap __unused, register_t *retval __unused) { return request_shutdown(p, FNU_SIG_INTERRUPT); }
 
-int64_t sys_poweroff(void) { return request_shutdown(SIGUSR2); }
+int sys_poweroff(struct proc *p, const register_t *uap __unused, register_t *retval __unused) { return request_shutdown(p, FNU_SIG_USER2); }
 
-int64_t sys_halt(void) {
-  struct proc *p = myproc();
+int sys_halt(struct proc *p, const register_t *uap, register_t *retval __unused) {
   int howto;
 
-  if (argint(0, &howto) < 0)
-    return -1;
-  if (p->uid != 0 && !auth_is_wheel(p->uid))
-    return -1;
-  // only init takes the machine down, unless somebody insists
-  if (p->pid != 1 && !(howto & FNU_RB_FORCE))
-    return -1;
+  howto = (int)uap[0];
+  if (p->p_p->uid != 0)
+    return FNU_ERR_NOTPERMITTED;
+  if (p->p_p->pid != 1 && !(howto & FNU_HALT_FORCE))
+    return FNU_ERR_NOTPERMITTED;
   system_halt(howto);
-  return -1;
+  return FNU_ERR_IO;
 }
 
-int64_t sys_procinfo(void) {
-  struct procinfo *pi;
-  struct procinfo entry;
-  int capacity, count = 0;
-  pid_t last = 0, next;
+int sys_procinfo(struct proc *p, const register_t *uap, register_t *retval) {
+  struct fnu_procinfo *buf;
+  uint64_t dst;
+  int capacity, room, n, error = 0;
 
-  if (argptr(0, (char **)&pi, sizeof(*pi)) < 0 || argint(1, &capacity) < 0)
-    return -1;
-
-  if (capacity < 1)
-    return -1;
-  if (capacity > NPROC)
-    capacity = NPROC;
-
-  while (count < capacity && (next = procinfo_next(last, &entry)) > 0) {
-    if (copyout(myproc()->pgdir, (uintptr_t)(pi + count), &entry,
-                sizeof(entry)) < 0)
-      return -1;
-    last = next;
-    count++;
+  dst = uap[0];
+  capacity = (int)uap[1];
+  if (capacity < 0)
+    return FNU_ERR_INVALID;
+  if (capacity == 0) {
+    *retval = procinfo_all(0, 0);
+    return 0;
   }
-  return count;
+  if ((room = (int)get_nprocs()) > capacity)
+    room = capacity;
+  buf = malloc((size_t)room * sizeof(*buf), M_TEMP, M_WAITOK);
+  if ((n = procinfo_all(buf, room)) > room)
+    n = room;
+  if (copyout(p->p_p->pgdir, (uintptr_t)dst, buf, (size_t)n * sizeof(*buf)) < 0)
+    error = FNU_ERR_FAULT;
+  free(buf, M_TEMP);
+  *retval = n;
+  return error;
 }
 
-int64_t sys_malloc(void) {
-  int n;
-  if (argint(0, &n) < 0)
-    return -1;
-  // Allocate from process address space growth.
-  uintptr_t addr = myproc()->sz;
-  if (growproc(n) < 0)
-    return -1;
-  return addr;
-}
+int sys_fork(struct proc *p __unused, const register_t *uap __unused, register_t *retval) {
+  pid_t pid = fork();
 
-int64_t sys_free(void) {
-  // No-op to preserve syscall ABI.
+  if (pid < 0)
+    return (int)-pid;
+  *retval = pid;
+  yield(1);
   return 0;
 }
 
-int64_t sys_fork(void) { return fork(); }
-
-int64_t sys_exit(void) {
+int sys_exit(struct proc *p, const register_t *uap, register_t *retval __unused) {
   console_flush_if_dirty();
+  p->p_p->xexit = (int)uap[0] & 0xff;
+  p->p_p->xsig = 0;
   exit();
-  return 0; // not reached
+  return 0;
 }
 
-int64_t sys_wait(void) {
+static int wait_common(struct proc *p, pid_t pid, uint64_t uout, int flags,
+                       register_t *retval) {
+  struct fnu_exitinfo info;
+  struct fnu_exitinfo *out = uout != 0 ? &info : 0;
+  pid_t got;
+
+  memset(&info, 0, sizeof(info));
+  got = waitpid(pid, out, flags);
+  if (got < 0)
+    return (int)-got;
+  if (got > 0 && out != 0 &&
+      copyout(p->p_p->pgdir, (uintptr_t)uout, &info, sizeof(info)) < 0)
+    return FNU_ERR_FAULT;
+  *retval = got;
+  return 0;
+}
+
+int sys_wait(struct proc *p, const register_t *uap, register_t *retval) {
+  int flags = (int)uap[2];
+
   console_flush_if_dirty();
-  return wait();
+  if (flags & ~(FNU_WAIT_NOHANG | FNU_WAIT_STOPPED | FNU_WAIT_CONTINUED))
+    return FNU_ERR_INVALID;
+  return wait_common(p, (int)uap[0], uap[1], flags, retval);
 }
 
-int64_t sys_waitpid(void) {
-  pid_t pid;
+int sys_signal(struct proc *p __unused, const register_t *uap, register_t *retval __unused) {
+  return kill_perm((int)uap[0], (int)uap[1]);
+}
+
+int sys_sigtake(struct proc *p, const register_t *uap, register_t *retval __unused) {
+  struct fnu_siginfo si;
+  int error;
+
+  if ((error = signal_take((uint64_t)uap[0], &si, (int)uap[2])) != 0)
+    return error;
+  if (copyout(p->p_p->pgdir, (uintptr_t)uap[1], &si, sizeof(si)) < 0)
+    return FNU_ERR_FAULT;
+  return 0;
+}
+
+// THREADS
+int sys_thread_start(struct proc *p, const register_t *uap, register_t *retval) {
+  struct fnu_thread_start st;
+  pid_t tid;
+  int error;
+
+  if (copyin(p->p_p->pgdir, &st, (uintptr_t)uap[0], sizeof(st)) < 0)
+    return FNU_ERR_FAULT;
+  if ((error = thread_fork(&st, &tid)) != 0)
+    return error;
+  *retval = tid;
+  return 0;
+}
+
+int sys_thread_exit(struct proc *p, const register_t *uap, register_t *retval __unused) {
+  uint64_t cleared = uap[0];
+  uint32_t zero = 0;
+
+  if (cleared != 0 && (cleared & 3) == 0 &&
+      copyout(p->p_p->pgdir, (uintptr_t)cleared, &zero, sizeof(zero)) == 0)
+    futex_wake(p, (uintptr_t)cleared, ~0u, 0);
+  thread_exit();
+}
+
+int sys_thread_tcb(struct proc *p, const register_t *uap, register_t *retval __unused) {
+  uint64_t tcb;
+
+  tcb = uap[0];
+  if (tcb >= (1ull << 47))
+    return FNU_ERR_INVALID;
+  p->tcb = tcb;
+  wrmsr(MSR_FS_BASE, tcb);
+  return 0;
+}
+
+int sys_thread_yield(struct proc *p __unused, const register_t *uap __unused, register_t *retval __unused) {
+  yield(1);
+  return 0;
+}
+
+int sys_thread_id(struct proc *p, const register_t *uap __unused, register_t *retval) {
+  *retval = p->tid;
+  return 0;
+}
+
+int sys_sigpause(struct proc *p __unused, const register_t *uap, register_t *retval __unused) {
+  return kern_sigsuspend((uint64_t)uap[0]);
+}
+
+int sys_sigact(struct proc *p, const register_t *uap, register_t *retval __unused) {
+  struct fnu_sigact act, old;
+  uint64_t uact = uap[1], uold = uap[2];
+  int sig = (int)uap[0], error;
+
+  if (uact && copyin(p->p_p->pgdir, &act, (uintptr_t)uact, sizeof(act)) < 0)
+    return FNU_ERR_FAULT;
+  if ((error = kern_sigact(sig, uact ? &act : 0, uold ? &old : 0)) != 0)
+    return error;
+  if (uold && copyout(p->p_p->pgdir, (uintptr_t)uold, &old, sizeof old) < 0)
+    return FNU_ERR_FAULT;
+  return 0;
+}
+
+int sys_sigmask(struct proc *p __unused, const register_t *uap, register_t *retval) {
+  *retval = (register_t)kern_sigmask((uint64_t)uap[0], (uint64_t)uap[1]);
+  return 0;
+}
+
+int sys_sigraised(struct proc *p, const register_t *uap __unused, register_t *retval) {
+  *retval = (register_t)sig_pending_of(p);
+  return 0;
+}
+
+int sys_sigreturn(struct proc *p __unused, const register_t *uap, register_t *retval __unused) {
+  uint64_t scp;
+
+  scp = uap[0];
+  return kern_sigreturn((uintptr_t)scp);
+}
+
+int sys_procids(struct proc *p, const register_t *uap, register_t *retval __unused) {
+  struct fnu_procids ids;
+  int error;
+
+  memset(&ids, 0, sizeof(ids));
+  if ((error = proc_ids((int)uap[0], &ids)) != 0)
+    return error;
+  return copyout(p->p_p->pgdir, (uintptr_t)uap[1], &ids, sizeof(ids)) < 0
+             ? FNU_ERR_FAULT
+             : 0;
+}
+
+int sys_map(struct proc *p, const register_t *uap, register_t *retval) {
+  struct file *f = 0;
+  struct inode *ip = 0;
+  uintptr_t addr, want;
+  uint64_t len, offset;
+  int prot, flags, fd, error;
+
+  addr = uap[0];
+  len = uap[1];
+  prot = (int)uap[2];
+  flags = (int)uap[3];
+  fd = (int)uap[4];
+  offset = uap[5];
+  // bounded by the address space and RLIMIT_DATA
+  if (len == 0)
+    return FNU_ERR_INVALID;
+  if (len > USERTOP)
+    return FNU_ERR_NOMEMORY;
+  if (prot & ~(FNU_MEM_READ | FNU_MEM_WRITE | FNU_MEM_EXEC))
+    return FNU_ERR_INVALID;
+  if ((flags & (FNU_MEM_SHARED | FNU_MEM_PRIVATE)) == 0 ||
+      (flags & (FNU_MEM_SHARED | FNU_MEM_PRIVATE)) == (FNU_MEM_SHARED | FNU_MEM_PRIVATE))
+    return FNU_ERR_INVALID;
+  if (!(flags & FNU_MEM_ANON)) {
+    if ((f = fd_getfile(p->p_p, fd)) == 0)
+      return FNU_ERR_BADHANDLE;
+    if (f->type != FD_INODE || f->ip == 0 || f->ip->type != FNU_TYPE_FILE)
+      error = FNU_ERR_WRONGDEVICE;
+    else if (!f->readable ||
+             ((flags & FNU_MEM_SHARED) && (prot & FNU_MEM_WRITE) && !f->writable))
+      error = FNU_ERR_DENIED;
+    else
+      error = 0;
+    if (error != 0) {
+      FRELE(f);
+      return error;
+    }
+    ip = f->ip;
+  } else {
+    offset = 0;
+  }
+  error = vm_mmap(p, addr, (size_t)len, prot, flags, ip, offset, &want);
+  if (f != 0)
+    FRELE(f);
+  if (error != 0)
+    return error;
+  *retval = (register_t)want;
+  return 0;
+}
+
+int sys_unmap(struct proc *p, const register_t *uap, register_t *retval __unused) {
+  uintptr_t addr;
+  uint64_t len;
+
+  addr = uap[0];
+  len = uap[1];
+  if (len == 0 || (addr & (PGSIZE - 1)) != 0)
+    return FNU_ERR_INVALID;
+  len = PGROUNDUP(len);
+  if (!vm_holds(p, addr))
+    return FNU_ERR_INVALID;
+  return vm_munmap(p, addr, (size_t)len);
+}
+
+int sys_memsync(struct proc *p, const register_t *uap, register_t *retval __unused) {
+  uintptr_t addr;
+  uint64_t len;
   int flags;
 
-  console_flush_if_dirty();
-  if (argint(0, &pid) < 0 || argint(1, &flags) < 0)
-    return -1;
-  if (flags & ~1)
-    return -1;
-  return waitpid(pid, flags & 1);
+  addr = uap[0];
+  len = uap[1];
+  flags = (int)uap[2];
+  if ((addr & (PGSIZE - 1)) != 0 || (flags & ~(FNU_MEMSYNC_WAIT | FNU_MEMSYNC_START)) ||
+      (flags & (FNU_MEMSYNC_WAIT | FNU_MEMSYNC_START)) == (FNU_MEMSYNC_WAIT | FNU_MEMSYNC_START))
+    return FNU_ERR_INVALID;
+  return vm_msync(p, addr, (size_t)PGROUNDUP(len));
 }
 
-// root and wheel may signal anyone, anybody else only their own processes
-static int may_signal(pid_t pid) {
-  struct proc *p = myproc();
-  uint uid;
-
-  if (p->uid == 0 || auth_is_wheel(p->uid))
-    return 1;
-  if (pid < 0)
-    return 0;
-  return proc_uid_of(pid, &uid) == 0 && uid == p->uid;
-}
-
-int64_t sys_kill(void) {
-  pid_t pid;
-
-  if (argint(0, &pid) < 0 || !may_signal(pid))
-    return -1;
-  return kill(pid, SIGKILL);
-}
-
-int64_t sys_signal(void) {
-  pid_t pid;
-  int sig;
-
-  if (argint(0, &pid) < 0 || argint(1, &sig) < 0 || !may_signal(pid))
-    return -1;
-  return kill(pid, sig);
-}
-
-int64_t sys_sigcatch(void) {
-  int mask;
-
-  if (argint(0, &mask) < 0)
-    return -1;
-  signal_catch((uint32_t)mask);
-  return 0;
-}
-
-int64_t sys_sigwait(void) {
-  struct siginfo *out;
-  struct siginfo si;
-  int block;
-
-  if (argptr(0, (char **)&out, sizeof(*out)) < 0 || argint(1, &block) < 0)
-    return -1;
-  if (signal_take(&si, block) < 0)
-    return -1;
-  if (copyout(myproc()->pgdir, (uintptr_t)out, &si, sizeof(si)) < 0)
-    return -1;
-  return 0;
-}
-
-int64_t sys_getpid(void) { return (int64_t)myproc()->pid; }
-
-int64_t sys_setforeground(void) {
-  struct proc *p = myproc();
-  struct file *f;
-  pid_t pid;
-  int tty = -1;
-
-  if (argint(0, &pid) < 0 || pid < 0)
-    return -1;
-  // the job belongs to the terminal this process reads from, not to
-  // whichever one happens to be on screen
-  f = p->ofile[0];
-  if (f != 0 && f->type == FD_INODE && f->ip != 0 && f->ip->type == T_DEVICE &&
-      f->ip->major == CONSOLE)
-    tty = f->ip->minor;
-  console_set_foreground(tty, pid);
-  return 0;
-}
-
-int64_t sys_getuid(void) { return myproc()->uid; }
-
-int64_t sys_login(void) {
-  char *name, *password;
-  uint uid, gid;
-  if (argstr(0, &name) < 0 || argstr(1, &password) < 0)
-    return -1;
-  if (auth_login(name, password, &uid, &gid) < 0)
-    return -1;
-  myproc()->uid = uid;
-  myproc()->gid = gid;
-  myproc()->doas_grant = 0;
-  return 0;
-}
-
-int64_t sys_doas_auth(void) {
-  char *password;
-  if (argstr(0, &password) < 0 || auth_doas(myproc()->uid, password) < 0)
-    return -1;
-  myproc()->doas_grant = 1;
-  return 0;
-}
-
-int64_t sys_setuid(void) {
-  int uid;
-  if (argint(0, &uid) < 0 || uid != 0)
-    return -1;
-  if (myproc()->uid != 0 && !myproc()->doas_grant)
-    return -1;
-  myproc()->uid = 0;
-  myproc()->gid = 0;
-  myproc()->doas_grant = 0;
-  return 0;
-}
-
-int64_t sys_useradd(void) {
-  char *name, *password;
-  int wheel;
-  if (myproc()->uid != 0 || argstr(0, &name) < 0 || argstr(1, &password) < 0 ||
-      argint(2, &wheel) < 0)
-    return -1;
-  return auth_add_user(name, password, wheel != 0);
-}
-
-int64_t sys_passwd(void) {
-  char *name, *password;
-  if (argstr(0, &name) < 0 || argstr(1, &password) < 0)
-    return -1;
-  return auth_set_password(myproc()->uid, name, password);
-}
-
-int64_t sys_users(void) {
-  struct user_info *out;
-  int index;
-  if (argptr(0, (char **)&out, sizeof(*out)) < 0 || argint(1, &index) < 0)
-    return -1;
-  return auth_user_info(index, out);
-}
-
-int64_t sys_sbrk(void) {
+int sys_memuse(struct proc *p, const register_t *uap, register_t *retval __unused) {
   uintptr_t addr;
-  int n;
+  uint64_t len;
+  int advice;
 
-  if (argint(0, &n) < 0) {
-    return -1;
-  }
-  addr = myproc()->sz;
-  if (growproc(n) < 0) {
-    return -1;
-  }
-  return addr;
+  addr = uap[0];
+  len = uap[1];
+  advice = (int)uap[2];
+  if ((addr & (PGSIZE - 1)) != 0)
+    return FNU_ERR_INVALID;
+  if (len == 0)
+    return 0;
+  return vm_madvise(p, addr, (size_t)PGROUNDUP(len), advice);
 }
 
-int64_t sys_sleep(void) {
-  uint n;
-  uint ticks0;
+int sys_protect(struct proc *p, const register_t *uap, register_t *retval __unused) {
+  uintptr_t addr;
+  uint64_t len;
+  int prot;
 
-  console_flush_if_dirty();
-  if (argint(0, (int *)&n) < 0) {
-    return -1;
-  }
+  addr = uap[0];
+  len = uap[1];
+  prot = (int)uap[2];
+  if ((addr & (PGSIZE - 1)) != 0 || (prot & ~(FNU_MEM_READ | FNU_MEM_WRITE | FNU_MEM_EXEC)) != 0)
+    return FNU_ERR_INVALID;
+  if (len == 0)
+    return 0;
+  len = PGROUNDUP(len);
+  if (!vm_holds(p, addr))
+    return FNU_ERR_NOMEMORY;
+  return vm_mprotect(p, addr, (size_t)len, prot);
+}
 
-  // interval of ticks is 10ms (in QEMU), so we have to count 100 ticks for 1
-  // second.
-  n *= HZ;
+int sys_swapon(struct proc *p, const register_t *uap, register_t *retval __unused) {
+  struct pathname path;
+  struct inode *ip;
+  int r;
 
-  acquire(&tickslock);
-  ticks0 = ticks;
-  while (ticks - ticks0 < n) {
-    if (proc_interrupted()) {
-      release(&tickslock);
-      return -1;
-    }
-    sleep(&ticks, &tickslock);
-  }
-  release(&tickslock);
+  if (p->p_p->uid != 0)
+    return FNU_ERR_NOTPERMITTED;
+  if ((r = pn_get((uintptr_t)uap[0], &path)) != 0)
+    return r;
+  r = namei_at(0, path.pn_buf, UV_READ | UV_WRITE, &ip);
+  pn_free(&path);
+  if (r != 0)
+    return r;
+  ilock(ip);
+  r = swapon(ip);
+  iunlockput(ip);
+  return r;
+}
+
+int sys_swapoff(struct proc *p, const register_t *uap __unused, register_t *retval __unused) {
+  if (p->p_p->uid != 0)
+    return FNU_ERR_NOTPERMITTED;
+  return swapoff();
+}
+
+int sys_altstack(struct proc *p, const register_t *uap, register_t *retval __unused) {
+  struct fnu_altstack in, out;
+  uint64_t uin, uout;
+  int error;
+
+  uin = uap[0];
+  uout = uap[1];
+  if (uin != 0 &&
+      (error = pledge_need(p, FNU_PLEDGE_PROC | FNU_PLEDGE_ID, SYS_limit)) != 0)
+    return error;
+  if (uin != 0 && copyin(p->p_p->pgdir, &in, (uintptr_t)uin, sizeof(in)) < 0)
+    return FNU_ERR_FAULT;
+  memset(&out, 0, sizeof(out));
+  if ((error = kern_sigstack(uin ? &in : 0, uout ? &out : 0)) != 0)
+    return error;
+  if (uout != 0 &&
+      copyout(p->p_p->pgdir, (uintptr_t)uout, &out, sizeof(out)) < 0)
+    return FNU_ERR_FAULT;
   return 0;
 }
 
-int64_t sys_ping(void) {
-  struct network_ping_request *request;
-  if (argptr(0, (char **)&request, sizeof(*request)) < 0)
-    return -1;
-  return proninx_lwip_ping(request);
-}
-int64_t sys_udp_open(void) { return proninx_udp_open(); }
-int64_t sys_udp_bind(void) {
-  int h, p;
-  return argint(0, &h) || argint(1, &p) ? -1 : proninx_udp_bind(h, p);
-}
-int64_t sys_udp_close(void) {
-  int h;
-  return argint(0, &h) ? -1 : proninx_udp_close(h);
-}
-int64_t sys_udp_sendto(void) {
-  int h, n;
-  char *b;
-  struct network_endpoint *e;
-  if (argint(0, &h) || argint(2, &n) || n < 0 || argptr(1, &b, n) ||
-      argptr(3, (char **)&e, sizeof(*e)))
-    return -1;
-  return proninx_udp_sendto(h, b, n, e);
-}
-int64_t sys_udp_recvfrom(void) {
-  int h, n, t;
-  char *b;
-  struct network_endpoint *e;
-  if (argint(0, &h) || argint(2, &n) || n <= 0 || argptr(1, &b, n) ||
-      argptr(3, (char **)&e, sizeof(*e)) || argint(4, &t) || t < 0)
-    return -1;
-  return proninx_udp_recvfrom(h, b, n, e, t);
-}
-int64_t sys_netinfo(void) {
-  struct network_status *status;
-  return argptr(0, (char **)&status, sizeof(*status)) < 0
-             ? -1
-             : proninx_lwip_status(status);
-}
-int64_t sys_netconfig(void) {
-  struct network_ipv4_config *config;
-  return argptr(0, (char **)&config, sizeof(*config)) < 0
-             ? -1
-             : proninx_lwip_configure(config);
-}
-int64_t sys_tcp_open(void) { return proninx_tcp_open(); }
-int64_t sys_tcp_bind(void) {
-  int h, p;
-  return argint(0, &h) || argint(1, &p) || p < 1 || p > 65535
-             ? -1
-             : proninx_tcp_bind(h, p);
-}
-int64_t sys_tcp_listen(void) {
-  int h;
-  return argint(0, &h) ? -1 : proninx_tcp_listen(h);
-}
-int64_t sys_tcp_accept(void) {
-  int h, timeout;
-  return argint(0, &h) || argint(1, &timeout) || timeout < 0
-             ? -1
-             : proninx_tcp_accept(h, timeout);
-}
-int64_t sys_tcp_connect(void) {
-  int h, timeout;
-  struct network_endpoint *e;
-  return argint(0, &h) || argptr(1, (char **)&e, sizeof(*e)) ||
-                 argint(2, &timeout) || timeout < 0
-             ? -1
-             : proninx_tcp_connect(h, e, timeout);
-}
-int64_t sys_tcp_send(void) {
-  int h, n;
-  char *b;
-  return argint(0, &h) || argint(2, &n) || n <= 0 || argptr(1, &b, n)
-             ? -1
-             : proninx_tcp_send(h, b, n);
-}
-int64_t sys_tcp_recv(void) {
-  int h, n, timeout;
-  char *b;
-  return argint(0, &h) || argint(2, &n) || n <= 0 || argptr(1, &b, n) ||
-                 argint(3, &timeout) || timeout < 0
-             ? -1
-             : proninx_tcp_recv(h, b, n, timeout);
-}
-int64_t sys_tcp_close(void) {
-  int h;
-  return argint(0, &h) ? -1 : proninx_tcp_close(h);
-}
-int64_t sys_dns_resolve(void) {
-  struct network_dns_request *request;
-  return argptr(0, (char **)&request, sizeof(*request)) < 0
-             ? -1
-             : proninx_dns_resolve(request);
+// fnu_ident_get: who the caller is
+int sys_ident_get(struct proc *p, const register_t *uap, register_t *retval __unused) {
+  struct process *pr = p->p_p;
+  struct fnu_ident id;
+
+  memset(&id, 0, sizeof(id));
+  id.uid = pr->ruid;
+  id.euid = pr->uid;
+  id.svuid = pr->svuid;
+  id.gid = pr->rgid;
+  id.egid = pr->gid;
+  id.svgid = pr->svgid;
+  id.ngroups = (uint32)pr->ngroups;
+  memmove(id.groups, pr->groups, (size_t)pr->ngroups * sizeof(id.groups[0]));
+  id.changed = (uint32)pr->sugid;
+  strlcpy(id.login, pr->login, sizeof(id.login));
+  return copyout(pr->pgdir, (uintptr_t)uap[0], &id, sizeof(id)) < 0 ? FNU_ERR_FAULT
+                                                                      : 0;
 }
 
-/* ========================================================================== */
-/* FNU userland df syscall (fnudf utility)                                    */
-/* Populates DF_ENTRIES_MAX entries describing root, UFS2 volumes, and RAM.  */
-/* ========================================================================== */
+static int among(uint v, uint r, uint e, uint s) { return v == r || v == e || v == s; }
 
-/* Forward references into fs.c / storage.c world.  These symbols are all
- * defined in the files already compiled into the kernel binary and visible
- * at link time, even though we avoid including fs.h from here. */
-extern struct superblock sb;
-extern int root_fs_type;
-#define FS_NATIVE 0
-#define FS_FAT32  1
-#define FS_UFS2   2
-#define FNU_DATA_DEVICE 2
+#define IDENT_IDS                                                              \
+  (FNU_IDENT_UID | FNU_IDENT_GID | FNU_IDENT_RUID | FNU_IDENT_EUID |           \
+   FNU_IDENT_SVUID | FNU_IDENT_RGID | FNU_IDENT_EGID | FNU_IDENT_SVGID)
 
-static unsigned popcount_byte(unsigned char v) {
-  v = v - ((v >> 1) & 0x55u);
-  v = (v & 0x33u) + ((v >> 2) & 0x33u);
-  return ((v + (v >> 4)) & 0x0Fu);
-}
+int sys_ident_set(struct proc *p, const register_t *uap, register_t *retval __unused) {
+  struct process *pr = p->p_p;
+  struct fnu_ident id;
+  int what = (int)uap[1], root = pr->uid == 0;
+  uint ruid = pr->ruid, euid = pr->uid, svuid = pr->svuid;
+  uint rgid = pr->rgid, egid = pr->gid, svgid = pr->svgid;
 
-/* Count free bits [bstart, bend) of the xv6 bitmap stored on device dev. */
-static uint64_t native_count_free_blocks(uint dev, uint bstart, uint bend) {
-  struct buf *bp;
-  uint bi, mask, b, nbytes, start_within, end_within;
-  uint64_t free_bits = 0;
-  unsigned char *p;
-
-  if (bend <= bstart)
-    return 0;
-  for (b = bstart; b < bend;) {
-    bp = bread(dev, BBLOCK(b, sb));
-    nbytes = BSIZE;
-    start_within = b - BBLOCK(b, sb) * BPB;
-    for (bi = 0; bi < (uint)BPB && b < bend; bi++, b++) {
-      p = (unsigned char *)bp->data + bi / 8;
-      mask = 1u << (bi & 7);
-      /* The bitmap layout of xv6: bit = 1 means "in use". */
-      if ((uint)(*p & mask) == 0)
-        free_bits++;
-      (void)start_within;
-      (void)end_within;
-      (void)nbytes;
-    }
-    brelse(bp);
+  if (what & ~(IDENT_IDS | FNU_IDENT_GROUPS | FNU_IDENT_LOGIN))
+    return FNU_ERR_INVALID;
+  if (copyin(pr->pgdir, &id, (uintptr_t)uap[0], sizeof(id)) < 0)
+    return FNU_ERR_FAULT;
+  if ((what & FNU_IDENT_GROUPS) && id.ngroups > NGROUPS)
+    return FNU_ERR_INVALID;
+  if (what & FNU_IDENT_LOGIN) {
+    id.login[sizeof(id.login) - 1] = 0;
+    if (strlen(id.login) >= MAXLOGNAME)
+      return FNU_ERR_INVALID;
   }
-  return free_bits;
+  if (!root &&
+      ((what & (FNU_IDENT_GROUPS | FNU_IDENT_LOGIN)) ||
+       ((what & FNU_IDENT_UID) && !among(id.uid, pr->ruid, pr->uid, pr->svuid)) ||
+       ((what & FNU_IDENT_RUID) && !among(id.uid, pr->ruid, pr->uid, pr->svuid)) ||
+       ((what & FNU_IDENT_EUID) && !among(id.euid, pr->ruid, pr->uid, pr->svuid)) ||
+       ((what & FNU_IDENT_SVUID) && !among(id.svuid, pr->ruid, pr->uid, pr->svuid)) ||
+       ((what & FNU_IDENT_GID) && !among(id.gid, pr->rgid, pr->gid, pr->svgid)) ||
+       ((what & FNU_IDENT_RGID) && !among(id.gid, pr->rgid, pr->gid, pr->svgid)) ||
+       ((what & FNU_IDENT_EGID) && !among(id.egid, pr->rgid, pr->gid, pr->svgid)) ||
+       ((what & FNU_IDENT_SVGID) && !among(id.svgid, pr->rgid, pr->gid, pr->svgid))))
+    return FNU_ERR_NOTPERMITTED;
+  if (what & FNU_IDENT_UID) {
+    if (id.uid == pr->uid || root)
+      ruid = svuid = id.uid;
+    euid = id.uid;
+  }
+  if (what & FNU_IDENT_GID) {
+    if (id.gid == pr->gid || root)
+      rgid = svgid = id.gid;
+    egid = id.gid;
+  }
+  if (what & FNU_IDENT_RUID)
+    ruid = id.uid;
+  if (what & FNU_IDENT_EUID)
+    euid = id.euid;
+  if (what & FNU_IDENT_SVUID)
+    svuid = id.svuid;
+  if (what & FNU_IDENT_RGID)
+    rgid = id.gid;
+  if (what & FNU_IDENT_EGID)
+    egid = id.egid;
+  if (what & FNU_IDENT_SVGID)
+    svgid = id.svgid;
+  if (what & FNU_IDENT_GROUPS) {
+    memset(pr->groups, 0, sizeof(pr->groups));
+    memmove(pr->groups, id.groups, id.ngroups * sizeof(pr->groups[0]));
+    pr->ngroups = (int)id.ngroups;
+  }
+  if (what & FNU_IDENT_LOGIN)
+    strlcpy(pr->login, id.login, MAXLOGNAME);
+  if (euid != pr->uid || svuid != pr->svuid || ruid != pr->ruid ||
+      egid != pr->gid || svgid != pr->svgid || rgid != pr->rgid)
+    pr->sugid = 1;
+  pr->uid = euid;
+  pr->svuid = svuid;
+  pr->gid = egid;
+  pr->rgid = rgid;
+  pr->svgid = svgid;
+  if (ruid != pr->ruid)
+    proc_setruid(pr, ruid);
+  return 0;
 }
 
-int64_t sys_df(void) {
-  struct df_stat *out;
-  struct df_stat local[DF_ENTRIES_MAX];
-  int capacity_arg, nout = 0;
-  const struct ufs2_volume *vol;
-  struct superblock sbcopy;
-  struct proc *p;
-  uint64_t data_total, data_free, data_bytes, data_used;
+int sys_session_new(struct proc *p __unused, const register_t *uap __unused, register_t *retval) {
+  pid_t sid = setsid();
 
-  if (argptr(0, (char **)&out, DF_ENTRIES_MAX * sizeof(*out)) < 0)
-    return -1;
-  if (argint(1, &capacity_arg) < 0 || capacity_arg < 1 ||
-      capacity_arg > (int)DF_ENTRIES_MAX)
-    return -1;
-
-  memset(local, 0, sizeof(local));
-
-  /* -------------------------------------------------------------
-   * Entry 1: FNU Root filesystem (native xv6 FS or UFS2 / ramdisk).
-   * ---------------------------------------------------------- */
-  safestrcpy(local[nout].label, "FNU Root", sizeof(local[nout].label));
-  safestrcpy(local[nout].mount_point, "/", sizeof(local[nout].mount_point));
-  local[nout].is_present  = 1;
-  local[nout].is_read_only = (uint8)fs_root_readonly();
-
-  if (root_fs_type == FS_UFS2 && (vol = storage_ufs2_volume(rootdev)) != 0) {
-    uint64_t frags =
-        (uint64)vol->fragments_per_group * (uint64)vol->cylinder_groups;
-    data_bytes  = frags * (uint64)vol->fragment_size;
-    data_used   = 0; /* approximated below via whole-volume heuristic */
-    local[nout].total_bytes = data_bytes;
-    local[nout].used_bytes  = data_used;
-    local[nout].free_bytes  = data_bytes - data_used;
-    nout++;
-  } else if (root_fs_type == FS_NATIVE) {
-    /* Read the legacy xv6 superblock off rootdev and walk bitmap. */
-    readsb(rootdev, &sbcopy);
-    data_total = sbcopy.nblocks;
-    data_free =
-        native_count_free_blocks(rootdev, sbcopy.bmapstart * BPB,
-                                 sbcopy.bmapstart * BPB + sbcopy.nblocks);
-    data_free  = data_free > data_total ? data_total : data_free;
-    data_bytes = sbcopy.size * (uint64)BSIZE;
-    data_used  = (data_total - data_free) * (uint64)BSIZE;
-    local[nout].total_bytes = data_bytes;
-    local[nout].used_bytes  = data_used;
-    local[nout].free_bytes  = data_free * (uint64)BSIZE;
-    nout++;
-  } else {
-    /* FS_FAT32 or ramdisk-backed synthetic FS — use device size. */
-    uint64_t sectors = blockdev_device_size(rootdev);
-    data_bytes = sectors * 512;
-    local[nout].total_bytes = data_bytes;
-    local[nout].used_bytes  = data_bytes / 2; /* heuristic */
-    local[nout].free_bytes  = data_bytes - local[nout].used_bytes;
-    nout++;
-  }
-
-  /* -------------------------------------------------------------
-   * Entry 2: FNU Data volume (UFS2 device 2) if mounted.
-   * ---------------------------------------------------------- */
-  if ((vol = storage_ufs2_volume(FNU_DATA_DEVICE)) != 0 &&
-      nout < DF_ENTRIES_MAX) {
-    uint64_t frags =
-        (uint64)vol->fragments_per_group * (uint64)vol->cylinder_groups;
-    safestrcpy(local[nout].label, "FNU Data", sizeof(local[nout].label));
-    safestrcpy(local[nout].mount_point, "/data",
-               sizeof(local[nout].mount_point));
-    local[nout].is_present  = 1;
-    local[nout].is_read_only = 1;
-    local[nout].total_bytes = frags * (uint64)vol->fragment_size;
-    local[nout].free_bytes  = 0; /* exact per-CG free count not exposed yet */
-    local[nout].used_bytes  = local[nout].total_bytes - local[nout].free_bytes;
-    nout++;
-  }
-
-  /* -------------------------------------------------------------
-   * Entry 3: RAM summary — mirrors fnufetch memory lines.
-   * ---------------------------------------------------------- */
-  if (nout < DF_ENTRIES_MAX) {
-    uint64_t tot = get_total_ram();
-    uint64_t fr  = get_free_ram();
-    safestrcpy(local[nout].label, "RAM", sizeof(local[nout].label));
-    safestrcpy(local[nout].mount_point, "--", sizeof(local[nout].mount_point));
-    local[nout].is_present  = 1;
-    local[nout].is_read_only = 0;
-    local[nout].total_bytes = tot;
-    local[nout].free_bytes  = fr;
-    local[nout].used_bytes  = tot > fr ? tot - fr : 0;
-    nout++;
-  }
-
-  p = myproc();
-  if (copyout(p->pgdir, (uintptr_t)out, local, DF_ENTRIES_MAX * sizeof(*out)) <
-      0)
-    return -1;
-  return nout;
+  if (sid < 0)
+    return (int)-sid;
+  *retval = sid;
+  return 0;
 }
+
+int sys_pgroup_set(struct proc *p __unused, const register_t *uap, register_t *retval __unused) {
+  return setpgid((int)uap[0], (int)uap[1]);
+}
+
+int sys_limit(struct proc *p, const register_t *uap, register_t *retval __unused) {
+  struct fnu_limit in, out;
+  uint64_t uin = uap[1], uout = uap[2];
+  int error;
+
+  if (uin != 0 && copyin(p->p_p->pgdir, &in, (uintptr_t)uin, sizeof(in)) < 0)
+    return FNU_ERR_FAULT;
+  memset(&out, 0, sizeof(out));
+  if ((error = setrlimit((int)uap[0], uin ? &in : 0, uout ? &out : 0)) != 0)
+    return error;
+  if (uout != 0 &&
+      copyout(p->p_p->pgdir, (uintptr_t)uout, &out, sizeof(out)) < 0)
+    return FNU_ERR_FAULT;
+  return 0;
+}
+
+int sys_usage(struct proc *p, const register_t *uap, register_t *retval __unused) {
+  struct fnu_usage out;
+  int error;
+
+  memset(&out, 0, sizeof(out));
+  if ((error = proc_rusage((int)uap[0], &out)) != 0)
+    return error;
+  return copyout(p->p_p->pgdir, (uintptr_t)uap[1], &out, sizeof(out)) < 0
+             ? FNU_ERR_FAULT
+             : 0;
+}
+
+int sys_niceness(struct proc *p, const register_t *uap, register_t *retval __unused) {
+  int value = 0, error;
+
+  if ((int)uap[2] != FNU_NICE_GET &&
+      copyin(p->p_p->pgdir, &value, (uintptr_t)uap[3], sizeof(value)) < 0)
+    return FNU_ERR_FAULT;
+  if ((error = proc_niceness((int)uap[0], (int)uap[1], (int)uap[2], &value)) != 0)
+    return error;
+  return copyout(p->p_p->pgdir, (uintptr_t)uap[3], &value, sizeof(value)) < 0
+             ? FNU_ERR_FAULT
+             : 0;
+}
+
+// fnu_timer: as fnu_limit
+int sys_timer(struct proc *p, const register_t *uap, register_t *retval __unused) {
+  struct fnu_timer in, out;
+  uint64_t uin = uap[1], uout = uap[2];
+  int error;
+
+  if (uin != 0 && copyin(p->p_p->pgdir, &in, (uintptr_t)uin, sizeof(in)) < 0)
+    return FNU_ERR_FAULT;
+  memset(&out, 0, sizeof(out));
+  if ((error = setitimer((int)uap[0], uin ? &in : 0, uout ? &out : 0)) != 0)
+    return error;
+  if (uout != 0 &&
+      copyout(p->p_p->pgdir, (uintptr_t)uout, &out, sizeof(out)) < 0)
+    return FNU_ERR_FAULT;
+  return 0;
+}
+
+#define RANDOM_MAX 256
+
+int sys_random(struct proc *p, const register_t *uap, register_t *retval __unused) {
+  char bytes[RANDOM_MAX];
+  int len = (int)uap[1];
+
+  if (len < 1 || len > RANDOM_MAX)
+    return FNU_ERR_INVALID;
+  random_bytes(bytes, (uint)len);
+  return copyout(p->p_p->pgdir, (uintptr_t)uap[0], bytes, (size_t)len) < 0
+             ? FNU_ERR_FAULT
+             : 0;
+}
+
+static int nowake;
+
+int sys_sleep(struct proc *p, const register_t *uap, register_t *retval __unused) {
+  struct fnu_timespec want, left;
+  uint64_t uwant, uleft, n;
+  uint64_t t0, gone;
+  int error = 0;
+
+  uwant = uap[0];
+  uleft = uap[1];
+  if (copyin(p->p_p->pgdir, &want, (uintptr_t)uwant, sizeof(want)) < 0)
+    return FNU_ERR_FAULT;
+  if (want.sec < 0 || want.nsec < 0 || want.nsec >= 1000000000)
+    return FNU_ERR_INVALID;
+  n = (uint64_t)want.sec > ~(uint64_t)0 / HZ - 1
+          ? ~(uint64_t)0
+          : (uint64_t)want.sec * HZ +
+                (uint64_t)(want.nsec + (1000000000 / HZ) - 1) / (1000000000 / HZ);
+  // the tick we are in is partly gone already
+  if (n != 0 && n != ~(uint64_t)0)
+    n++;
+
+  while (n > 0 && error != FNU_ERR_INTERRUPTED) {
+    t0 = ticks;
+    error = tsleep(&nowake, PWAIT | PCATCH, "sleep",
+                   n > 0x7fffffff ? 0x7fffffff : (int)n);
+    gone = ticks - t0;
+    n = gone >= n ? 0 : n - gone;
+  }
+  if (uleft != 0) {
+    memset(&left, 0, sizeof(left));
+    left.sec = (int64_t)(n / HZ);
+    left.nsec = (int32_t)(n % HZ) * (1000000000 / HZ);
+    copyout(p->p_p->pgdir, (uintptr_t)uleft, &left, sizeof(left));
+  }
+  p->sig_restart = 0;
+  return error == FNU_ERR_INTERRUPTED ? FNU_ERR_INTERRUPTED : 0;
+}
+
+int sys_netinfo(struct proc *p, const register_t *uap, register_t *retval) {
+  struct fnu_ifinfo *buf = 0;
+  uint64_t dst;
+  int capacity, n, error = 0;
+
+  dst = uap[0];
+  capacity = (int)uap[1];
+  if (capacity < 0)
+    return FNU_ERR_INVALID;
+  if ((n = if_info_all(0, 0)) < capacity)
+    capacity = n;
+  if (capacity > 0)
+    buf = malloc((size_t)capacity * sizeof(*buf), M_TEMP, M_WAITOK);
+  n = if_info_all(buf, capacity);
+  if (capacity > 0 &&
+      copyout(p->p_p->pgdir, (uintptr_t)dst, buf,
+              (size_t)(n < capacity ? n : capacity) * sizeof(*buf)) < 0)
+    error = FNU_ERR_FAULT;
+  if (buf != 0)
+    free(buf, M_TEMP);
+  *retval = n;
+  return error;
+}
+
+int sys_netconfig(struct proc *p, const register_t *uap, register_t *retval __unused) {
+  struct fnu_ifconfig config;
+  struct ifnet *ifp;
+
+  if (p->p_p->uid != 0)
+    return FNU_ERR_NOTPERMITTED;
+  if (copyin(p->p_p->pgdir, &config, (uintptr_t)uap[0], sizeof(config)) < 0)
+    return FNU_ERR_FAULT;
+  config.name[sizeof(config.name) - 1] = 0;
+  if ((ifp = ifunit(config.name)) == 0)
+    return FNU_ERR_NODEVICE;
+  return net_stack_config(ifp, &config);
+}
+

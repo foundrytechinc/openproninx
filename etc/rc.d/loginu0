@@ -1,0 +1,4 @@
+desc=login on the serial line
+run=/usr/bin/login
+on=/dev/ttyu0
+secure=yes

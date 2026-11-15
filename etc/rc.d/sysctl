@@ -1,0 +1,3 @@
+desc=apply /etc/sysctl.conf
+stage=boot
+step=/usr/bin/sysctl -f /etc/sysctl.conf && if [ -f /etc/malloc.conf ]; then /usr/bin/sysctl kern.malloc_options="$(cat /etc/malloc.conf)"; fi

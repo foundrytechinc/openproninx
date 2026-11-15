@@ -1,0 +1,3 @@
+desc=SSH server
+requires=var
+run=/usr/bin/sshd

@@ -1,0 +1,70 @@
+// the system's errors in words
+#include "inc/fnu.h"
+
+static const char *const text[FNU_ERR_LAST + 1] = {
+    [FNU_ERR_INVALID] = "invalid argument",
+    [FNU_ERR_FAULT] = "bad address",
+    [FNU_ERR_NOCALL] = "no such system call",
+    [FNU_ERR_UNSUPPORTED] = "not supported",
+    [FNU_ERR_BADREQUEST] = "no such request for this object",
+    [FNU_ERR_INTERRUPTED] = "interrupted",
+    [FNU_ERR_WOULDBLOCK] = "would wait",
+    [FNU_ERR_RANGE] = "result out of range",
+    [FNU_ERR_ARGSTOOLONG] = "argument list too long",
+    [FNU_ERR_NAMETOOLONG] = "name too long",
+    [FNU_ERR_BUSY] = "busy",
+    [FNU_ERR_TIMEDOUT] = "timed out",
+    [FNU_ERR_INPROGRESS] = "in progress",
+    [FNU_ERR_ALREADY] = "already in progress",
+    [FNU_ERR_NOTPERMITTED] = "not permitted",
+    [FNU_ERR_DENIED] = "access denied",
+    [FNU_ERR_READONLY] = "read-only volume",
+    [FNU_ERR_NOMEMORY] = "out of memory",
+    [FNU_ERR_NOSPACE] = "no space left on the volume",
+    [FNU_ERR_TOOMANYOPEN] = "too many open descriptors",
+    [FNU_ERR_SYSTEMFULL] = "too many open files in the system",
+    [FNU_ERR_NOBUFFERS] = "no buffer space",
+    [FNU_ERR_TOOLARGE] = "file too large",
+    [FNU_ERR_TOOMANYLINKS] = "too many links",
+    [FNU_ERR_NOTFOUND] = "not found",
+    [FNU_ERR_EXISTS] = "already exists",
+    [FNU_ERR_NOTDIR] = "not a directory",
+    [FNU_ERR_ISDIR] = "is a directory",
+    [FNU_ERR_NOTEMPTY] = "directory not empty",
+    [FNU_ERR_LOOP] = "too many links followed",
+    [FNU_ERR_CROSSDEVICE] = "across volumes",
+    [FNU_ERR_TEXTBUSY] = "a running program's file",
+    [FNU_ERR_NOTSEEKABLE] = "has no position",
+    [FNU_ERR_BADHANDLE] = "bad descriptor",
+    [FNU_ERR_IO] = "input/output error",
+    [FNU_ERR_NODEVICE] = "no such device",
+    [FNU_ERR_WRONGDEVICE] = "the device cannot do that",
+    [FNU_ERR_NOTDISK] = "not a disk",
+    [FNU_ERR_NOPROCESS] = "no such process",
+    [FNU_ERR_NOCHILD] = "no child to wait for",
+    [FNU_ERR_BADEXEC] = "not a program",
+    [FNU_ERR_NOTSOCKET] = "not a socket",
+    [FNU_ERR_WRONGTYPE] = "wrong kind of socket",
+    [FNU_ERR_BADOPTION] = "no such option",
+    [FNU_ERR_NOPROTOCOL] = "no such protocol",
+    [FNU_ERR_NOFAMILY] = "no such address family",
+    [FNU_ERR_ADDRINUSE] = "address in use",
+    [FNU_ERR_NEEDADDRESS] = "no address given",
+    [FNU_ERR_MSGTOOBIG] = "message too long",
+    [FNU_ERR_NOTCONNECTED] = "not connected",
+    [FNU_ERR_CONNECTED] = "already connected",
+    [FNU_ERR_REFUSED] = "connection refused",
+    [FNU_ERR_RESET] = "connection reset",
+    [FNU_ERR_ABORTED] = "connection aborted",
+    [FNU_ERR_BROKENPIPE] = "nobody reads the other end",
+    [FNU_ERR_NETDOWN] = "network is down",
+    [FNU_ERR_HOSTUNREACH] = "host unreachable",
+};
+
+const char *fnu_errstr(int err) {
+  if (err < 0)
+    err = -err;
+  if (err > FNU_ERR_LAST || text[err] == 0)
+    return "unknown error";
+  return text[err];
+}

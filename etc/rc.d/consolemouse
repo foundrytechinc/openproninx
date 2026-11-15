@@ -1,0 +1,4 @@
+desc=show the mouse pointer on the console
+requires=moused
+step=/usr/bin/vidcontrol -m on < /dev/console
+stop=/usr/bin/vidcontrol -m off < /dev/console

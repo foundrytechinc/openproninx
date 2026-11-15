@@ -1,61 +1,57 @@
+#include "blockdev.h"
 #include "defs.h"
+#include "inc/abi.h"
 #include "inc/signal.h"
 #include "mmu.h"
 #include "param.h"
 #include "proc.h"
 #include "acpi.h"
 #include "x86.h"
+#include "vfs.h"
 
-extern uint ticks;
-extern struct cpu cpus[];
+extern struct cpu_info cpus[];
 
 static void uptime(void) {
-  uint s = ticks / HZ;
+  uint64_t s = ticks / HZ;
 
-  cprintf("Uptime: %dd %dh %dm %ds\n", s / 86400, (s % 86400) / 3600,
-          (s % 3600) / 60, s % 60);
+  printf("Uptime: %dd %dh %dm %ds\n", (int)(s / 86400), (int)(s % 86400 / 3600),
+          (int)(s % 3600 / 60), (int)(s % 60));
 }
 
-// interrupts are about to go, so the tsc is the only clock left
-static uint64_t stamp;
-static uint device_ms, cpu_ms;
-
-static uint elapsed_ms(void) {
-  uint64_t hz = delay_tsc_hz(), now = rdtsc();
-  uint ms;
-
-  ms = hz >= 1000 ? (uint)((now - stamp) / (hz / 1000)) : 0;
-  stamp = now;
-  return ms;
-}
-
-// order from OpenBSD machdep.c boot()
-static void quiesce(void) {
-  stamp = rdtsc();
+static void quiesce(int howto) {
+  vfs_sync();
+  msgbuf_dump(0);
+  vfs_dismount_all();
+  blockdev_flush_all();
+  if ((howto & 0xff) != FNU_HALT_REBOOT)
+    blockdev_powerdown_all();
   driver_shutdown_all();
-  device_ms = elapsed_ms();
+  acpi_tpm_shutdown();
+  acpi_poweroff_prepare((howto & 0xff) == FNU_HALT_POWEROFF);
+}
+
+static void alone(void) {
   lapic_halt_others();
-  cpu_ms = elapsed_ms();
   console_drop_lock();
   cli();
 }
 
 static void say(const char *what) {
-  cprintf("%s (devices %d ms, cpus %d ms)\n", what, device_ms, cpu_ms);
+  printf("%s\n", what);
 }
 
 static volatile int handoff_howto;
 static volatile int handoff_pending;
 
-// firmware reset paths want the boot processor, as FreeBSD cpu_reset does.
-// mycpu() refuses to run with interrupts on, so read the apic directly.
-static int on_boot_cpu(void) { return lapicid() == cpus[0].apicid; }
+static int on_boot_cpu(void) { return (uint32_t)lapicid() == cpus[0].apicid; }
+
+static void finish(int howto) __dead;
 
 void system_halt_handoff(void) {
   if (!handoff_pending || !on_boot_cpu())
     return;
   handoff_pending = 0;
-  system_halt(handoff_howto);
+  finish(handoff_howto);
 }
 
 static void kbd_pulse(void) {
@@ -71,7 +67,6 @@ static void kbd_pulse(void) {
   delay(100000);
 }
 
-// Linux keeps the bits it did not come to change
 static void pch_reset(uint8_t code) {
   uint8_t cf9 = (uint8_t)(inb(0xcf9) & ~code);
 
@@ -92,61 +87,53 @@ static void fast_init_reset(void) {
   delay(200000);
 }
 
-static void machine_restart(void) {
+void machine_restart(void) {
   struct {
     uint16_t limit;
     uint64_t base;
-  } __attribute__((packed)) null_idt = {0, 0};
+  } __packed null_idt = {0, 0};
 
   cli();
-  // hard reset first: a modern chipset answers it and it does not cut power.
-  // the firmware value can carry FULL_RST, so it waits.
-  cprintf("reset: pch reset control, hard\n");
   pch_reset(0x06);
-  cprintf("reset: keyboard controller\n");
   kbd_pulse();
-  if (efirt_available()) {
-    cprintf("reset: efi runtime services\n");
+  if (efirt_available())
     efirt_reboot();
-  }
-  cprintf("reset: acpi reset register\n");
   acpi_reset_via_fadt();
-  cprintf("reset: pch reset control, full\n");
   pch_reset(0x0e);
-  cprintf("reset: fast init port\n");
   fast_init_reset();
-  cprintf("reset: nothing worked, shutting the cpu down\n");
-  __asm__ volatile("lidt (%0); int $3" : : "r"(&null_idt));
+  printf("reset: nothing worked, shutting the cpu down\n");
+  __asm __volatile("lidt (%0); int $3" : : "r"(&null_idt));
   for (;;)
     hlt();
 }
 
 void system_halt(int howto) {
-  if (!on_boot_cpu() && ncpu > 1) {
-    cprintf("Handing the shutdown to the boot processor\n");
+  uptime();
+  quiesce(howto);
+  if (!on_boot_cpu() && ncpus > 1) {
     handoff_howto = howto;
     handoff_pending = 1;
     console_drop_lock();
-    lapic_halt_to((uchar)cpus[0].apicid);
+    lapic_halt_to(cpus[0].apicid);
     cli();
+    curcpu()->halted = 1;
     for (;;)
       hlt();
   }
+  finish(howto);
+}
 
-  uptime();
-  quiesce();
+static void finish(int howto) {
+  alone();
   switch (howto & 0xff) {
-  case FNU_RB_REBOOT:
+  case FNU_HALT_REBOOT:
     say("Rebooting...");
     machine_restart();
     break;
-  case FNU_RB_POWEROFF:
+  case FNU_HALT_POWEROFF:
     say("Powering system off...");
-    if (efirt_available()) {
-      cprintf("poweroff: efi runtime services\n");
+    if (efirt_available())
       efirt_poweroff();
-    }
-    cprintf("poweroff: acpi soft-off\n");
     acpi_poweroff();
     break;
   default:
@@ -157,6 +144,40 @@ void system_halt(int howto) {
     hlt();
 }
 
-void system_poweroff(void) { system_halt(FNU_RB_POWEROFF); }
+#define PANIC_REBOOT_WAIT_TIME 15
+static int panic_reboot_wait_time = PANIC_REBOOT_WAIT_TIME;
 
-void system_reboot(void) { system_halt(FNU_RB_REBOOT); }
+void shutdown_sysctl(void) {
+  int n;
+
+  if (getenv_int("kern.panic_reboot_wait_time", &n) && n >= -1)
+    panic_reboot_wait_time = n;
+  sysctl_add_int("kern.panic_reboot_wait_time", &panic_reboot_wait_time,
+                 FNU_CTLF_STDIO | FNU_CTLF_WRITE, -1, 1 << 30);
+}
+
+void shutdown_panic(void) {
+  int loop;
+
+  if (panic_reboot_wait_time == 0)
+    return;
+  if (panic_reboot_wait_time != -1) {
+    printf("Automatic reboot in %d seconds - press a key on the console to abort\n",
+           panic_reboot_wait_time);
+    for (loop = panic_reboot_wait_time * 10; loop > 0; --loop) {
+      delay(1000 * 100);
+      if (cncheckc() != -1)
+        break;
+    }
+    if (loop == 0)
+      return;
+  }
+  printf("--> Press a key on the console to reboot,\n"
+         "--> or switch off the system now.\n");
+  while (cncheckc() == -1)
+    delay(1000 * 10);
+}
+
+void system_poweroff(void) { system_halt(FNU_HALT_POWEROFF); }
+
+void system_reboot(void) { system_halt(FNU_HALT_REBOOT); }

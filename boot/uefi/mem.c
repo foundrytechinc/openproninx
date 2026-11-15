@@ -14,7 +14,6 @@
 static struct fnu_memrange raw[MAP_MAX];
 static struct fnu_efi_range rt[MAP_MAX];
 
-// FreeBSD EFI_ALLOWED_TYPES_MASK
 static int runtime_needed(const struct efi_memory_descriptor *d) {
   if ((d->attribute & EFI_MEMORY_RUNTIME) != 0)
     return 1;
@@ -49,7 +48,6 @@ static uint32 rt_merge(uint32 n) {
   uint32 i, out = 0;
 
   for (i = 0; i < n; i++) {
-    // join by attribute; it is all the kernel maps by
     if (out > 0 && rt[out - 1].attribute == rt[i].attribute &&
         rt[out - 1].base + rt[out - 1].pages * EFI_PAGE_SIZE == rt[i].base) {
       rt[out - 1].pages += rt[i].pages;
@@ -60,7 +58,6 @@ static uint32 rt_merge(uint32 n) {
   return out;
 }
 
-// after NetBSD efiboot getmemtype
 static uint32 fnu_type(const struct efi_memory_descriptor *d) {
   switch (d->type) {
   case EFI_LOADER_CODE:
@@ -109,7 +106,6 @@ static uint32 merge(uint32 n) {
   return out;
 }
 
-// a dropped reserved range is a hole the kernel was never going to use
 static uint32 trim(uint32 n) {
   uint32 i, victim;
 
@@ -130,8 +126,39 @@ static uint32 trim(uint32 n) {
   return n;
 }
 
-void memory_map(struct fnu_bootinfo *bi, const void *map, uint64 bytes,
-                uint64 descsize) {
+static uint32 carve(uint32 n, uint64 lo, uint64 hi) {
+  uint32 i;
+
+  lo &= ~(uint64)(EFI_PAGE_SIZE - 1);
+  hi = (hi + EFI_PAGE_SIZE - 1) & ~(uint64)(EFI_PAGE_SIZE - 1);
+  for (i = 0; i < n && n + 2 <= MAP_MAX; i++) {
+    uint64 b = raw[i].base, e = b + raw[i].length;
+
+    if (raw[i].type != FNU_MEM_RAM || e <= lo || b >= hi)
+      continue;
+    if (b < lo) {
+      raw[n].base = b;
+      raw[n].length = lo - b;
+      raw[n].type = FNU_MEM_RAM;
+      raw[n].pad = 0;
+      n++;
+    }
+    if (e > hi) {
+      raw[n].base = hi;
+      raw[n].length = e - hi;
+      raw[n].type = FNU_MEM_RAM;
+      raw[n].pad = 0;
+      n++;
+    }
+    raw[i].base = b > lo ? b : lo;
+    raw[i].length = (e < hi ? e : hi) - raw[i].base;
+    raw[i].type = FNU_MEM_RESERVED;
+  }
+  return n;
+}
+
+void memory_map(struct fnu_bootinfo *bi, uint64 keep, uint64 keeplen,
+                const void *map, uint64 bytes, uint64 descsize) {
   const uint8 *p = map;
   const uint8 *end = p + bytes;
   uint32 n = 0, rtn = 0, i;
@@ -144,7 +171,6 @@ void memory_map(struct fnu_bootinfo *bi, const void *map, uint64 bytes,
 
     if (d->pages == 0)
       continue;
-    // mapped back at their own addresses for the length of a runtime call
     if (runtime_needed(d) && rtn < MAP_MAX &&
         (d->physical_start & (EFI_PAGE_SIZE - 1)) == 0) {
       rt[rtn].base = d->physical_start;
@@ -161,6 +187,8 @@ void memory_map(struct fnu_bootinfo *bi, const void *map, uint64 bytes,
     n++;
   }
 
+  if (keeplen != 0)
+    n = carve(n, keep, keep + keeplen);
   sort(n);
   n = trim(merge(n));
 
@@ -170,7 +198,6 @@ void memory_map(struct fnu_bootinfo *bi, const void *map, uint64 bytes,
 
   rt_sort(rtn);
   rtn = rt_merge(rtn);
-  // a hole in the map is a page the firmware would fault on
   if (rtn > FNU_EFI_RANGE_MAX)
     rtn = 0;
   for (i = 0; i < rtn; i++)
@@ -181,12 +208,12 @@ void memory_map(struct fnu_bootinfo *bi, const void *map, uint64 bytes,
 static int has_1g_pages(void) {
   uint32 a, b, c, d;
 
-  __asm__ volatile("cpuid"
+  __asm __volatile("cpuid"
                    : "=a"(a), "=b"(b), "=c"(c), "=d"(d)
                    : "a"(0x80000000u));
   if (a < 0x80000001u)
     return 0;
-  __asm__ volatile("cpuid"
+  __asm __volatile("cpuid"
                    : "=a"(a), "=b"(b), "=c"(c), "=d"(d)
                    : "a"(0x80000001u));
   return (d & (1u << 26)) != 0;
@@ -195,14 +222,13 @@ static int has_1g_pages(void) {
 static uint64 rsp_now(void) {
   uint64 sp;
 
-  __asm__ volatile("movq %%rsp,%0" : "=r"(sp));
+  __asm __volatile("movq %%rsp,%0" : "=r"(sp));
   return sp;
 }
 
 static uint64 *pd_pool;
 static uint32 pd_used;
 
-// one gigabyte of 2M entries, shared by the identity and direct maps
 static void map_gb(uint64 *pdpt, uint64 *dmap, uint32 idx) {
   uint64 *pd;
   uint32 i;
@@ -218,15 +244,13 @@ static void map_gb(uint64 *pdpt, uint64 *dmap, uint32 idx) {
   dmap[idx] = pdpt[idx];
 }
 
-// identity map for the switch itself, the direct map and the kernel image.
-// the kernel rebuilds all of this over the full memory map once it runs.
 uint64 paging_setup(void) {
   uint64 *pml4, *pdpt_lo, *pdpt_dmap, *pdpt_hi;
-  efi_phys block = 0xffffffffULL;
+  efi_phys block;
   uint32 i;
 
-  if (EFI_ERROR(BS->allocate_pages(EFI_ALLOCATE_MAX_ADDRESS, EFI_LOADER_DATA,
-                                   TABLE_PAGES, &block)))
+  block = boot_alloc((uint64)TABLE_PAGES * EFI_PAGE_SIZE);
+  if (block == 0)
     panic("no low memory for the page tables");
 
   pml4 = (uint64 *)(uintptr_t)block;
@@ -250,7 +274,6 @@ uint64 paging_setup(void) {
     return (uint64)(uintptr_t)pml4;
   }
 
-  // no 1G entries: map the low four gigabytes plus the ones we sit in
   for (i = 0; i < IDENTITY_GB; i++)
     map_gb(pdpt_lo, pdpt_dmap, i);
   map_gb(pdpt_lo, pdpt_dmap, (uint32)(rsp_now() >> 30));
@@ -261,15 +284,15 @@ uint64 paging_setup(void) {
 }
 
 void enter_kernel(uint64 entry, uint64 cr3, uint64 info) {
-  register uint64 target __asm__("rax") = entry;
-  register uint64 arg __asm__("rdi") = info;
-  register uint64 table __asm__("rcx") = cr3;
+  register uint64 target __asm("rax") = entry;
+  register uint64 arg __asm("rdi") = info;
+  register uint64 table __asm("rcx") = cr3;
 
-  __asm__ volatile("cli\n\t"
+  __asm __volatile("cli\n\t"
                    "movq %2, %%cr3\n\t"
                    "jmp *%0"
                    :
                    : "r"(target), "r"(arg), "r"(table)
                    : "memory");
-  __builtin_unreachable();
+  __unreachable();
 }

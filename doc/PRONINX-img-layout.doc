@@ -1,38 +1,18 @@
-# OpenProninx Hybrid GPT Disk Image Layout (PRONINX.img)
+PRONINX.img layout (512 byte sectors)
 
-OpenProninx disk images use a Hybrid GPT layout created via `tools/mkimage.sh` that boots across both legacy BIOS and UEFI firmware:
+sector 0     protective MBR with stage_1. The BIOS loads it at 0x7c00.
+sector 1     GPT header
+sector 2     GPT entries (128)
+sector 2048  EFI system partition, FAT32, label FNUESP, at least 64 MiB:
+               /EFI/BOOT/BOOTX64.EFI  UEFI loader
+               /fnu/kernel            kernel
+               /fnu/ramdisk           root used when there is no fnu-root
+then         fnu-boot, 1 MiB: stage2 as raw sectors
+then         fnu-root, ROOT_MB: UFS2 root, made by makefs
+then         fnu-swap, SWAP_MB (256 MiB): swap, the hibernation image and
+             the kernel message dump at the end
+last 33      backup GPT
 
-```
-+----------------------------------------------------------------------------------+
-| Sector 0: Protective MBR / stage_1.S (relocates to 0x600, parses GPT, loads stage2)|
-+----------------------------------------------------------------------------------+
-| Sectors 1-33: GPT Header & Partition Entry Array Table                           |
-+----------------------------------------------------------------------------------+
-| Partition 1: EFI System Partition (ESP, Type EF00, FAT32, ~64 MiB)               |
-|   - /EFI/BOOT/BOOTX64.EFI (Clang/LLD compiled UEFI 2.10 loader)                  |
-|   - /fnu/kernel           (ELF64 kernel binary)                                  |
-|   - /fnu/ramdisk          (ELF/RAMDisk rootfs boot module)                       |
-+----------------------------------------------------------------------------------+
-| Partition 2: fnu-boot (Type GUID 7B589DA3-BDC2-4F6C-8028-FC43D46C5953, ~1 MiB)   |
-|   - Raw binary stage2 (realprot NetBSD thunk, FAT32 reader, VBE/EDID, A20, ELF64)|
-|   - Attribute: LEGACY_BIOS_BOOTABLE                                              |
-+----------------------------------------------------------------------------------+
-| Partition 3: fnu-root (Type 8300, ~32 MiB)                                       |
-|   - Persistent root filesystem / storage partition                               |
-+----------------------------------------------------------------------------------+
-| Secondary / Backup GPT Table (last 33 sectors of the disk)                       |
-+----------------------------------------------------------------------------------+
-```
-
-## Boot Flow Comparison
-
-### BIOS Boot Chain:
-1. BIOS loads MBR (stage_1.S) at `0x7C00`.
-2. stage_1 relocates itself to `0x600`, parses GPT partition entries, locates partition with `FNUBOOT_GUID` / `LEGACY_BIOS_BOOTABLE`.
-3. stage_1 uses INT 13h extensions to load stage2 into memory.
-4. stage2 activates A20, queries VBE/EDID / coreboot tables, reads `/fnu/kernel` and `/fnu/ramdisk` from the FAT32 ESP, builds PML4/PDPT/PD page tables with DMAP, populates `struct bootinfo`, and transitions the CPU into 64-bit Long Mode.
-
-### UEFI Boot Chain:
-1. UEFI firmware executes `/EFI/BOOT/BOOTX64.EFI`.
-2. Loader discovers GOP framebuffer, allocates memory map, reads `/fnu/kernel` and `/fnu/ramdisk` into memory.
-3. Calls `ExitBootServices`, preserves EFI Runtime Services pointers in `bootinfo`, and jumps directly to 64-bit kernel entry.
+BIOS: stage_1 loads stage2 from fnu-boot, stage2 reads the kernel and the
+ramdisk from the ESP (boot/fat.c).
+UEFI: the firmware runs BOOTX64.EFI, which reads the same files.

@@ -2,14 +2,10 @@
 
 ## Decision
 
-FNU/OpenProninx will use **UFS2/FFS** as the planned mutable
-data filesystem. This preserves the BSD-family licensing direction while
-avoiding an in-house filesystem format and the licensing/complexity burden of
-ZFS or GPLv2 lwext4.
-
-This decision does not change the current native filesystem implementation.
-The xv6-derived filesystem remains the legacy boot filesystem until the UFS2
-path passes its defined validation gates.
+FNU/OpenProninx uses **UFS2/FFS** as its writable filesystem. It keeps the
+BSD licensing direction and avoids both a homemade format and the weight of
+ZFS or GPLv2 lwext4. The xv6 filesystem is gone. The loader's ramdisk is a
+UFS2 image made from the same tree as the root partition.
 
 ## Volume roles
 
@@ -22,49 +18,84 @@ path passes its defined validation gates.
 
 FAT32 must not be selected as the root, service-state, log, or data volume.
 
-## Porting boundary
+## Root
 
-The UFS2 port must be isolated behind an FNU block-device and VFS adapter. It
-must not expose FreeBSD kernel internals across the rest of PRONINX. Every
-imported file must retain its original license notice and be recorded with its
-upstream revision in an SBOM. The initial on-disk-format attribution is in
-[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
+The root is the GPT partition `fnu-root`, made by `tools/mkimage.sh` with
+`makefs(8)`. Both loaders read the GPT of the boot disk, find `fnu-root`, read
+`/etc/filesystems` from it (`boot/ufs2read.c`) and pass the `/` line to the
+kernel as `vfs.root.mountfrom`, the same way FreeBSD does. The build writes
+that line with the partition's own UUID.
 
-The first milestone is read-only mounting of a known-good UFS2 image in QEMU.
-Write support is blocked until file reads, directory traversal, corrupt-image
-rejection and offline repair with FreeBSD tooling are demonstrated.
+If nothing names a disk root, the kernel uses the ramdisk. If the named root
+cannot be mounted it asks at `mountroot>` (`?` lists disks). USB holds the
+root mount until its first scan is done, and a missing device is waited for
+up to `vfs.mountroot.timeout` seconds (3).
 
-## Current implementation
+Other UFS2 and FAT volumes are mounted with `mount(8)` or from
+`/etc/filesystems`. `kern/fat32.c` handles FAT12, FAT16 and FAT32.
 
-The kernel now provides a modular storage architecture supporting:
-- **Hybrid GPT Partitioning:** Generated via `tools/mkimage.sh`, containing an ESP (FAT32 for UEFI), `fnu-boot`, and `fnu-root` partitions.
-- **Hardware Block Drivers:** Full PCI auto-probing and support for IDE/ATA, AHCI SATA (with COMRESET, IDENTIFY, and SATA Gen negotiation), and NVMe (with spec 1.4 compliant shutdown).
-- **RAMDisk Boot Module:** The root filesystem is passed cleanly as a boot module from the BIOS/UEFI bootloader via `bootinfo`, removing the need to embed the disk image directly inside the kernel binary.
-- **VFS Enhancements:** Dedicated path buffers (`MAXPATHLEN 512`, `MAXNAMLEN 255`), `getcwd(2)` with parent traversal (`..`), and robust inode reuse in `iget()` ensuring `fs_type` state isolation across filesystem drivers.
-- **UFS2 Integration:** A bounded, read-only `blockdev` adapter and UFS2 format reader derived from FreeBSD UFS2 specifications (revision `4aea6ea2eb400737837ff8d22c25688f88c7966c`). It validates superblocks, reads UFS2 inodes and direct/indirect blocks, bounds-checks offsets, and exposes valid FNU Data images at `/data`.
+## Device names
 
-When booted without external data disks, OpenProninx operates as a self-contained system using the bootloader-provided root ramdisk (`DEV_RAMDISK`). When an external volume or secondary partition is attached, it is recognized and integrated into the storage hierarchy.
+GPT partitions are devices of their own (`wd0p3`). Stable names, as in
+DragonFly:
 
-For QEMU, attach a prepared raw UFS2 image as the optional device:
+- `/dev/part-by-uuid/`, `/dev/part-by-label/` for GPT entries
+- `/dev/fs-by-uuid/`, `/dev/fs-by-label/` for filesystems
+- `/dev/serno/SERIAL` for a disk, `pN` appended for a partition
 
-```sh
-bmake qemu UFS2_DATA_IMG=/absolute/path/to/fnu-data.ufs
-```
+The first device to claim a name keeps it. Duplicates are reported.
 
-To exercise a complete UFS2 system root instead of the default root image:
+## Buffer cache
 
-```sh
-bmake qemu UFS2_SYSTEM_IMG=/absolute/path/to/fnu-system.ufs
-```
+The cache takes a sixteenth of memory and is hashed on device and block
+number. Buffers sit on three queues as in 4.4BSD: free, AGE and dirty.
+Requests are at most `MAXPHYS` (64 KB). Read-ahead only kicks in for
+sequential reads. Full blocks are delayed writes and go out in 64 KB
+clusters. The rest waits for the 30 second syncer, `sync(2)` or an unmount.
 
-`bmake system-image` stages the FNU userspace and invokes the host's audited BSD-compatible `makefs` with `version=2`. Release engineering publishes the resulting image for ordinary Linux/WSL operators.
+`O_DIRECT` (`FNU_OPEN_UNCACHED`) still uses the cache but does not keep the
+data. `O_SYNC` (`FNU_OPEN_WRITETHROUGH`) writes at once and flushes the disk
+cache. Block numbers are 64 bit all the way down.
 
-## Required validation before writable use
+## Disk drivers
 
-- Mount and read UFS2 images produced by a supported FreeBSD release.
-- Reject invalid superblocks, out-of-range block references and corrupted
-  cylinder-group metadata without a kernel panic.
-- Run interruption tests over create, write, rename and delete operations.
-- Verify recovery using the compatible FreeBSD `fsck_ffs` tool.
-- Review the imported code, build flags and SBOM before declaring writable UFS2
-  support complete.
+- IDE attaches only to PCI class 01:01 controllers, in compatibility or
+  native mode. It uses bus master DMA when there is one and LBA48 when
+  needed.
+- AHCI and NVMe use DMA. NVMe uses PRP lists, honours MDTS and keeps
+  several commands in flight.
+- USB mass storage uses READ(16)/WRITE(16) on big disks and 64 KB transfers
+  from DMA memory below 4 GB. Devices on the quirk list
+  (`kern/usb/usb_quirk.c`, or `hw.usb.quirk.N` from the loader) get no
+  SYNCHRONIZE CACHE, for example the Kingston DataTraveler 3.0. Disks are
+  stopped at power off and started again with START UNIT.
+
+## FAT
+
+FAT caches the last cluster position per file, like msdosfs, so appends do
+not walk the whole chain. `chmod` keeps only the read-only bit. `chown` only
+accepts the current owner. `link` and `symlink` fail. `stat` returns
+`st_ino` and `st_blocks` on every filesystem.
+
+The sticky bit on a directory limits `unlink` and `rename` to the owner of
+the file, the owner of the directory, or root. `/tmp` has it.
+
+## Kernel messages across reboots
+
+The message buffer lives at the top of memory and survives a warm reboot. The
+T520's coreboot clears memory, so at shutdown and on panic the buffer is also
+written to the end of `fnu-swap`. The next boot reads it back and `dmesg`
+shows it once.
+
+## Tools
+
+`newfs(8)`, `fsck_ffs(8)` and `fsck(8)` are included. The build needs
+`makefs(8)` on the host.
+
+## Validation
+
+- Images made by FreeBSD's `makefs` mount, and images written here check
+  clean with an independent fsck and read back byte for byte.
+- Invalid superblocks, out-of-range block references and damaged cylinder
+  groups are refused without a panic.
+- Volumes interrupted mid-write are repaired by `fsck_ffs` and mount again.

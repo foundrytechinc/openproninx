@@ -11,9 +11,13 @@
 #define LWIP_NO_CTYPE_H 1
 #define LWIP_NO_UNISTD_H 1
 #define SSIZE_MAX 0x7fffffffffffffffL
-#define LWIP_PLATFORM_DIAG(x) do { cprintf x; } while (0)
+#define LWIP_PLATFORM_DIAG(x) do { printf x; } while (0)
 #define LWIP_PLATFORM_ASSERT(x) panic(x)
-#define LWIP_RAND() ((u32_t)ticks)
+uint32_t proninx_lwip_random(void);
+void *proninx_lwip_malloc(size_t size);
+void *proninx_lwip_calloc(size_t n, size_t size);
+void proninx_lwip_free(void *p);
+#define LWIP_RAND() ((u32_t)proninx_lwip_random())
 #define LWIP_UNUSED_ARG(x) (void)(x)
 
 typedef uint8_t u8_t;
@@ -39,7 +43,7 @@ typedef intptr_t ptrdiff_t;
 #define BYTE_ORDER LITTLE_ENDIAN
 #define PACK_STRUCT_BEGIN
 #define PACK_STRUCT_END
-#define PACK_STRUCT_STRUCT __attribute__((packed))
+#define PACK_STRUCT_STRUCT __packed
 #define PACK_STRUCT_FIELD(x) x
 #define PACK_STRUCT_FLD_8(x) x
 #define PACK_STRUCT_FLD_S8(x) x

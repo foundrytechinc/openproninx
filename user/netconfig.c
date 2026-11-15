@@ -1,37 +1,37 @@
-#include "user.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <fnu/sys.h>
 
-static int ipv4(const char *text, uchar out[4]) {
-  int i, value;
-  for (i = 0; i < 4; i++) {
-    value = 0;
-    if (*text < '0' || *text > '9') return -1;
-    while (*text >= '0' && *text <= '9') { value = value * 10 + *text++ - '0'; if (value > 255) return -1; }
-    out[i] = value;
-    if (i < 3) { if (*text++ != '.') return -1; }
-  }
-  return *text ? -1 : 0;
-}
-
-static int equal(const char *left, const char *right) {
-  while (*left && *left == *right) { left++; right++; }
-  return *left == *right;
+static void usage(void) {
+  dprintf(2, "usage: netconfig interface dhcp\n"
+             "       netconfig interface address netmask gateway [dns]\n");
+  exit(1);
 }
 
 int main(int argc, char **argv) {
-  struct network_ipv4_config config;
-  int i;
-  for (i = 0; i < (int)sizeof(config); i++) ((char *)&config)[i] = 0;
-  if (argc == 2 && equal(argv[1], "dhcp")) {
+  struct fnu_ifconfig config;
+
+  memset(&config, 0, sizeof(config));
+  if (argc < 3 || strlen(argv[1]) >= sizeof(config.name))
+    usage();
+  strncpy(config.name, argv[1], sizeof(config.name) - 1);
+  if (argc == 3 && strcmp(argv[2], "dhcp") == 0)
     config.dhcp = 1;
-  } else if ((argc == 4 || argc == 5) && ipv4(argv[1], config.address) == 0 &&
-             ipv4(argv[2], config.netmask) == 0 && ipv4(argv[3], config.gateway) == 0 &&
-             (argc == 4 || ipv4(argv[4], config.dns_server) == 0)) {
+  else if ((argc == 5 || argc == 6) && fnu_addr_parse(argv[2], config.address) == 0 &&
+           fnu_addr_parse(argv[3], config.netmask) == 0 &&
+           fnu_addr_parse(argv[4], config.gateway) == 0 &&
+           (argc == 5 || fnu_addr_parse(argv[5], config.dns_server) == 0))
     config.dhcp = 0;
-  } else {
-    printf("usage: netconfig dhcp | netconfig ADDRESS NETMASK GATEWAY [DNS]\n");
-    exit();
+  else
+    usage();
+  if (fnu_netconfig(&config) < 0) {
+    dprintf(2, "netconfig: %s: refused, or no such interface\n", config.name);
+    exit(1);
   }
-  if (netconfig(&config) < 0) printf("netconfig: rejected or network unavailable\n");
-  else printf("netconfig: %s configured\n", config.dhcp ? "DHCP" : "static IPv4");
-  exit();
+  printf("netconfig: %s %s\n", config.name,
+         config.dhcp ? "asks for a lease" : "configured");
+  exit(0);
 }

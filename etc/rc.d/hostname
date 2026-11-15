@@ -1,0 +1,3 @@
+desc=set the hostname from /etc/myname
+stage=boot
+step=if [ -s /etc/myname ]; then /usr/bin/hostname "$(cat /etc/myname)"; fi

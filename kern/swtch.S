@@ -35,5 +35,3 @@ swtch:
   popq %rbx
   popq %rbp
   ret
-
-.section .note.GNU-stack,"",@progbits

@@ -1,13 +1,13 @@
-/*
- * FNU/OpenProninx fnudate -- Print or set the RTC wall-clock time.
- *
- * fnudate is part of the FNU (Foundry is Not Unix) userland.  It mirrors
- * the POSIX `date` command but uses the OpenProninx SYS_rtctime ABI to
- * snapshot the on-board CMOS RTC.  No timezone database is consulted;
- * the reported timezone defaults to the host-local RTC offset.
- */
-#include "user/user.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <errno.h>
+#include <time.h>
+#include <fnu/sys.h>
+#include <sys/syscall.h>
 #include "inc/product.h"
+#include <err.h>
 
 static const char *weekdays[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
 static const char *months[]   = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
@@ -30,14 +30,14 @@ static char *fmt4(int v, char *out) {
 }
 
 int main(int argc, char **argv) {
-  struct rtctime t;
+  struct fnu_rtctime t;
   char a[4], b[4], c[4], d[4], y[8];
+  int r;
   (void)argc; (void)argv;
 
-  if (rtctime(&t) < 0) {
-    dprintf(2, "fnudate: cannot read RTC from kernel "
-               "(SYS_rtctime unavailable or not privileged)\n");
-    exit();
+  if ((r = fnu_rtctime(&t)) < 0) {
+    warnx("rtctime: %s", fnu_errstr(r));
+    exit(1);
   }
 
   printf("%s %s %s %s:%s:%s %s RTC\n",
@@ -53,5 +53,5 @@ int main(int argc, char **argv) {
     dprintf(2, "fnudate: warning -- RTC century byte missing; "
                "QEMU host time may be inaccurate\n");
   }
-  exit();
+  exit(0);
 }

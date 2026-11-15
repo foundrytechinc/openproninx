@@ -1,0 +1,4 @@
+desc=login on Alt+F4
+run=/usr/bin/login
+on=/dev/tty4
+secure=yes

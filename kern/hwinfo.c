@@ -2,7 +2,7 @@
 #include "inc/abi.h"
 #include "memlayout.h"
 #include "proc.h"
-#include "storage/ahci.h"
+#include "blockdev.h"
 #include "x86.h"
 
 static void put4(char *d, uint32_t v) {
@@ -12,14 +12,13 @@ static void put4(char *d, uint32_t v) {
   d[3] = (char)(v >> 24);
 }
 
-// leaves 80000002..4 hold the brand string, 48 bytes, space padded
 static void cpu_brand(char *out) {
   uint32_t a, b, c, d, leaf;
   int i;
 
   cpuid_count(0x80000000, 0, &a, &b, &c, &d);
   if (a < 0x80000004) {
-    safestrcpy(out, "unknown", HW_BRAND_MAX);
+    strlcpy(out, "unknown", FNU_HW_BRAND_MAX);
     return;
   }
   for (leaf = 0x80000002; leaf <= 0x80000004; leaf++) {
@@ -33,7 +32,6 @@ static void cpu_brand(char *out) {
   out[48] = 0;
   for (i = 47; i >= 0 && (out[i] == ' ' || out[i] == 0); i--)
     out[i] = 0;
-  // intel pads the brand on the left. printed raw it shoves the field sideways
   for (i = 0; out[i] == ' '; i++)
     ;
   if (i > 0)
@@ -48,9 +46,10 @@ static int near(uint64_t a, uint64_t b) {
   return b != 0 && d * 32 < b;
 }
 
-// CPUID 16h is the part quoting its own datasheet. before Skylake there is
-// no such leaf: take the ratios from the MSRs and let the calibrated tsc
-// pick the bus clock. FreeBSD reads leaf 16h the same way in x86/tsc.c.
+static uint64_t bus_clock; // the ratios' unit, 0 when not known
+
+uint64_t cpu_bus_clock(void) { return bus_clock; }
+
 static void cpu_clocks(const char *vendor, uint64_t *base, uint64_t *max) {
   uint64_t tsc = delay_tsc_hz(), bclk = 0;
   uint32_t a, b, c, d, high, ratio, turbo;
@@ -65,12 +64,12 @@ static void cpu_clocks(const char *vendor, uint64_t *base, uint64_t *max) {
     cpuid_count(0x16, 0, &a, &b, &c, &d);
     *base = (uint64_t)(a & 0xffff) * 1000000;
     *max = (uint64_t)(b & 0xffff) * 1000000;
+    bus_clock = (uint64_t)(c & 0xffff) * 1000000;
     if (*base != 0)
       return;
     *max = 0;
   }
 
-  // leaf 0bh and MSR_PLATFORM_INFO both arrived with Nehalem
   if (high < 0x0b)
     return;
   ratio = (uint32_t)((rdmsr(MSR_PLATFORM_INFO) >> 8) & 0xff);
@@ -82,6 +81,7 @@ static void cpu_clocks(const char *vendor, uint64_t *base, uint64_t *max) {
     bclk = 400000000ULL / 3;
   else
     return;
+  bus_clock = bclk;
   *base = (uint64_t)ratio * bclk;
 
   cpuid_count(6, 0, &a, &b, &c, &d);
@@ -92,12 +92,9 @@ static void cpu_clocks(const char *vendor, uint64_t *base, uint64_t *max) {
     *max = (uint64_t)turbo * bclk;
 }
 
-int64_t sys_hwinfo(void) {
-  struct hwinfo hw, *dst;
+void hwinfo_fill(struct fnu_hwinfo *out) {
+  struct fnu_hwinfo hw;
   uint32_t a, b, c, d;
-
-  if (argptr(0, (char **)&dst, sizeof(*dst)) < 0)
-    return -1;
 
   memset(&hw, 0, sizeof(hw));
   cpuid_count(0, 0, &a, &b, &c, &d);
@@ -111,12 +108,12 @@ int64_t sys_hwinfo(void) {
   hw.cpu_stepping = a & 0xf;
   hw.cpu_model = (a >> 4) & 0xf;
   hw.cpu_family = (a >> 8) & 0xf;
-  if (hw.cpu_family == 0xf)
-    hw.cpu_family += (a >> 20) & 0xff;
   if (hw.cpu_family == 0x6 || hw.cpu_family == 0xf)
     hw.cpu_model += ((a >> 16) & 0xf) << 4;
+  if (hw.cpu_family == 0xf)
+    hw.cpu_family += (a >> 20) & 0xff;
 
-  hw.cpu_count = (uint32_t)ncpu;
+  hw.cpu_count = (uint32_t)ncpus;
   hw.tsc_hz = delay_tsc_hz();
   cpu_clocks(hw.cpu_vendor, &hw.cpu_base_hz, &hw.cpu_max_hz);
   hw.pci_devices = (uint32_t)driver_device_count();
@@ -129,31 +126,40 @@ int64_t sys_hwinfo(void) {
   display_get_resolution(&hw.fb_width, &hw.fb_height, &hw.fb_bpp);
   hw.fb_columns = framebuffer_available() ? framebuffer_columns() : 80;
   hw.fb_rows = framebuffer_available() ? framebuffer_rows() : 25;
+  *out = hw;
+}
 
-  if (copyout(myproc()->pgdir, (uintptr_t)dst, &hw, sizeof(hw)) < 0)
-    return -1;
+int sys_hwinfo(struct proc *p, const register_t *uap, register_t *retval __unused) {
+  struct fnu_hwinfo hw;
+
+  hwinfo_fill(&hw);
+  if (copyout(p->p_p->pgdir, (uintptr_t)uap[0], &hw, sizeof(hw)) < 0)
+    return FNU_ERR_FAULT;
   return 0;
 }
 
-int64_t sys_diskinfo(void) {
-  struct diskinfo *dst;
-  struct diskinfo e;
+int sys_diskinfo(struct proc *p, const register_t *uap, register_t *retval) {
+  struct fnu_diskinfo e;
+  uint64_t dst;
   int capacity, n = 0, i;
 
-  if (argptr(0, (char **)&dst, sizeof(*dst)) < 0 || argint(1, &capacity) < 0)
-    return -1;
-  if (capacity < 1)
-    return -1;
-  if (capacity > DISK_ENTRIES_MAX)
-    capacity = DISK_ENTRIES_MAX;
+  dst = uap[0];
+  capacity = (int)uap[1];
+  if (capacity < 0)
+    return FNU_ERR_INVALID;
 
-  for (i = 0; n < capacity; i++) {
-    memset(&e, 0, sizeof(e));
-    if (ahci_disk_info(i, &e) < 0)
+  for (i = 0;; i++) {
+    uint dev;
+
+    if (blockdev_nth_disk((uint)i, &dev) < 0)
       break;
-    if (copyout(myproc()->pgdir, (uintptr_t)(dst + n), &e, sizeof(e)) < 0)
-      return -1;
+    if (blockdev_ident(dev, &e) < 0)
+      continue;
+    if (n < capacity &&
+        copyout(p->p_p->pgdir, (uintptr_t)(dst + n * sizeof(e)), &e, sizeof(e)) < 0)
+      return FNU_ERR_FAULT;
     n++;
   }
-  return n;
+  *retval = capacity == 0 || n < capacity ? n : capacity;
+  return 0;
 }

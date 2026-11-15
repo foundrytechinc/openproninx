@@ -1,0 +1,4 @@
+desc=save boot messages to /var/run/dmesg.boot
+stage=boot
+requires=var
+step=/usr/bin/dmesg > /var/run/dmesg.boot

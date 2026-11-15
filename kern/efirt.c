@@ -5,9 +5,8 @@
 #include "param.h"
 #include "x86.h"
 
-/* uefi runtime services. the firmware still wants its own physical
- * addresses, so the call runs on a 1:1 map of its own, the way FreeBSD
- * efi_create_1t1_map does. */
+// UEFI RUNTIME SERVICES
+// the firmware wants its physical addresses: calls run on a 1:1 map of their own
 
 #define EFI_RESET_COLD 0
 #define EFI_RESET_WARM 1
@@ -31,14 +30,13 @@ struct efi_runtime {
   void *query_variable_info;
 };
 
-_Static_assert(__builtin_offsetof(struct efi_runtime, reset_system) == 104,
+_Static_assert(__offsetof(struct efi_runtime, reset_system) == 104,
                "ResetSystem is the eleventh entry after the header");
 
-typedef void(__attribute__((ms_abi)) * efi_reset_fn)(uint32_t type,
-                                                     uint64_t status,
-                                                     uint64_t size, void *data);
+typedef void(EFIAPI *efi_reset_fn)(uint32_t type, uint64_t status,
+                                   uint64_t size, void *data);
 
-extern pte_t *kpgdir;
+extern pte_t *kernel_pgdir;
 
 static pte_t *efi_pgdir;
 static uint64_t efi_runtime_phys;
@@ -52,14 +50,11 @@ void efirt_init(void) {
     return;
   if (bi->efi_runtime_services == 0 || bi->efi_ranges == 0)
     return;
-  if ((efi_pgdir = (pte_t *)kalloc()) == 0)
+  if ((efi_pgdir = (pte_t *)page_alloc()) == 0)
     return;
 
-  // the kernel half stays, so the call runs on the stack it arrived on
-  memmove(efi_pgdir, kpgdir, PGSIZE);
+  memmove(efi_pgdir, kernel_pgdir, PGSIZE);
 
-  // only what the firmware described, where it described it, cached the way
-  // it asked. OpenBSD efi_map_runtime. nothing here uses NX.
   for (i = 0; i < bi->efi_ranges; i++) {
     uint64_t base = bi->efi_rt[i].base;
     uint64_t len = bi->efi_rt[i].pages * PGSIZE;
@@ -77,7 +72,6 @@ void efirt_init(void) {
     }
   }
 
-  // FreeBSD efi_create_1t1_map maps physical page zero too
   if (map_range(efi_pgdir, 0, 0, PGSIZE, PTE_W) < 0) {
     efi_pgdir = 0;
     return;
@@ -86,23 +80,15 @@ void efirt_init(void) {
   efi_range_count = bi->efi_ranges;
 }
 
-// the console does not exist when efirt_init runs, so this is said later
 void efirt_report(void) {
   const struct fnu_bootinfo *bi = bootinfo();
 
-  if (bi == 0 || bi->firmware != FNU_FIRMWARE_UEFI)
-    return;
-  if (efi_pgdir == 0) {
-    cprintf("EFI: runtime services unavailable, reset falls back to acpi\n");
-    return;
-  }
-  cprintf("EFI: runtime services at 0x%x, %u mapped ranges\n",
-          efi_runtime_phys, (uint)efi_range_count);
+  if (bi != 0 && bi->firmware == FNU_FIRMWARE_UEFI && efi_pgdir == 0)
+    printf("EFI: runtime services unavailable, reset falls back to acpi\n");
 }
 
 int efirt_available(void) { return efi_pgdir != 0; }
 
-// returns only when the firmware declined
 static int efirt_reset(uint32_t type) {
   volatile struct efi_runtime *rt;
   efi_reset_fn reset;

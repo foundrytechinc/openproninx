@@ -1,4 +1,4 @@
-// A20 gate. Try the cheap methods first, verify after each one.
+// A20
 
 	.text
 	.code16
@@ -38,7 +38,7 @@ a20_test:
 	popw	%ds
 	ret
 
-// wait for the 8042 input buffer to drain, %cx runs out on dead hardware
+// the 8042 input buffer drained
 kbd_wait_in:
 	movw	$0xffff, %cx
 1:	inb	$0x64, %al
@@ -107,5 +107,3 @@ kbd:
 	call	a20_test
 done:
 	ret
-
-	.section .note.GNU-stack,"",@progbits
