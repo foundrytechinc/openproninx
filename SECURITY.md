@@ -2,7 +2,7 @@
 
 ## Current status
 
-**FNU/PRONINX Core 0.1.5-dev must not be exposed to an untrusted network or
+**FNU/PRONINX Core 0.1.8-dev must not be exposed to an untrusted network or
 used for confidential data.**
 
 The current code predates the Core security architecture. It has no secure
@@ -28,16 +28,24 @@ policy, do not report vulnerabilities in public issue trackers. Use the
 company's established private security channel and include a reproducible
 proof of concept, affected revision, and impact assessment.
 
-## Development-image account and IPC limits
+## Development image
 
-The image initializes local `root`, `admin`, and `user` records. These are
-development-image accounts, not secure provisioning defaults. The account
-implementation uses salted SHA-256 hashes and supports at most 16 accounts,
-UID/GID values, wheel membership, `chmod`, `chown`, and local `doas`
-authentication. It does not provide modern password hardening, roles, remote
-authentication, or a complete access-control model.
+The image has two accounts, `root` and `admin`. The bcrypt hashes are in
+`/etc/master.passwd`, readable by root only. Members of `wheel` may use
+`doas`. `login`, `su`, `doas` and `passwd` are setuid programs that check the
+hash themselves; the kernel ignores the setuid bit on volumes mounted
+`nosuid`. Roles, password ageing and an audit trail are not implemented. The
+default passwords are in `README.md`. Change them.
 
-The supervisor exposes `/fnusvc.command`, `/fnusvc.status`, and `/.fnuhealth`
-as volatile kernel-state devices. They are local control/observation
-interfaces, not authenticated IPC or audit storage; their contents reset at
-reboot.
+Only root may write the supervisor's FIFO `/var/run/fnusvc.ctl`. `/dev/klog`
+holds the last 64 KB of kernel messages and is readable by root and `wheel`.
+The messages of the previous boot survive a reboot (in memory, or at the end
+of the `fnu-swap` partition) and `dmesg` shows them once. They are for
+debugging. They are unsigned and get overwritten.
+
+## sshd
+
+`sshd` listens on port 22 from boot and takes passwords and public keys for
+any account, root included. It has no privilege separation and allows six
+attempts per connection. Root and password logins cannot be turned off yet.
+On a network you do not trust, stop it with `fnusvc` or unplug the cable.

@@ -1,8 +1,7 @@
 #include "boot.h"
 
-#define STAGE_ADDR 0x01000000u
-#define STAGE_MAX 0x00400000u  // staging room for the kernel image
-#define KERNEL_SLACK 0x00400000u // what kinit1 frees past the modules
+#define LOW_4G 0x100000000ull
+#define FLOOR 0x100000ull
 #define DMAP_PML4 256
 #define BOOT_DMAP_GB 4
 #define PTE_P 0x001
@@ -42,11 +41,11 @@ _Static_assert(sizeof(struct elfhdr) == 64, "elfhdr");
 _Static_assert(sizeof(struct proghdr) == 56, "proghdr");
 
 static struct fnu_bootinfo bi;
-static uint64 pml4[512] __attribute__((aligned(4096)));
-static uint64 pdpt_lo[512] __attribute__((aligned(4096)));
-static uint64 pdpt_hi[512] __attribute__((aligned(4096)));
-static uint64 pdpt_dmap[512] __attribute__((aligned(4096)));
-static uint64 pd[512] __attribute__((aligned(4096)));
+static uint64 pml4[512] __aligned(4096);
+static uint64 pdpt_lo[512] __aligned(4096);
+static uint64 pdpt_hi[512] __aligned(4096);
+static uint64 pdpt_dmap[512] __aligned(4096);
+static uint64 pd[512] __aligned(4096);
 
 static const uint8 esp_type[16] = {0x28, 0x73, 0x2a, 0xc1, 0x1f, 0xf8,
                                    0xd2, 0x11, 0xba, 0x4b, 0x00, 0xa0,
@@ -78,8 +77,53 @@ int memcmp(const void *a, const void *b, uint32 n) {
   return 0;
 }
 
+static uint64 tsc0;
+static uint32 logged;
+static int at_line_start = 1;
+
+static uint64 rdtsc(void) {
+  uint32 lo, hi;
+
+  __asm __volatile("rdtsc" : "=a"(lo), "=d"(hi));
+  return ((uint64)hi << 32) | lo;
+}
+
+static void putdec(char *out, uint32 v) {
+  char num[24];
+  int i = (int)sizeof(num) - 1, n = 0;
+
+  num[i] = 0;
+  do {
+    num[--i] = (char)('0' + v % 10);
+    v /= 10;
+  } while (v != 0);
+  while (num[i])
+    out[n++] = num[i++];
+  out[n] = 0;
+}
+
+// the loader's words for the kernel. stamps in 2^20 tsc ticks, don't ask
+static void logc(char c) {
+  char num[24];
+  uint32 i;
+
+  if (at_line_start) {
+    num[0] = '+';
+    putdec(num + 1, (uint32)((rdtsc() - tsc0) >> 20));
+    for (i = 0; num[i] && logged < FNU_BOOTLOG_MAX - 2; i++)
+      bi.log[logged++] = num[i];
+    if (logged < FNU_BOOTLOG_MAX - 2)
+      bi.log[logged++] = ' ';
+    at_line_start = 0;
+  }
+  if (logged < FNU_BOOTLOG_MAX - 1)
+    bi.log[logged++] = c;
+  at_line_start = c == '\n';
+}
+
 void putstr(const char *s) {
   for (; *s; s++) {
+    logc(*s);
     if (*s == '\n')
       bios_putc('\r');
     bios_putc(*s);
@@ -91,7 +135,7 @@ void panic(const char *s) {
   putstr(s);
   putstr("\n");
   for (;;)
-    __asm__ volatile("hlt");
+    __asm __volatile("hlt");
 }
 
 void e820_map(struct fnu_bootinfo *out) {
@@ -148,22 +192,46 @@ uint64 acpi_scan(void) {
   return 0;
 }
 
+static uint64 smbios_scan(void) {
+  uint8 buf[32];
+  uint32 a, i, sum, len, v3 = 0;
+
+  for (a = 0xf0000; a < 0x100000; a += 16) {
+    flat_copy(buf, a, sizeof(buf));
+    if (memcmp(buf, "_SM_", 4) == 0 && buf[5] >= 0x1e)
+      len = buf[5];
+    else if (memcmp(buf, "_SM3_", 5) == 0 && buf[6] >= 0x18)
+      len = buf[6];
+    else
+      continue;
+    if (len > sizeof(buf))
+      continue;
+    for (sum = 0, i = 0; i < len; i++)
+      sum += buf[i];
+    if ((sum & 0xff) != 0)
+      continue;
+    if (buf[3] == '_')
+      return a;
+    if (v3 == 0)
+      v3 = a;
+  }
+  return v3;
+}
+
 static int has_1g_pages(void) {
   uint32 a, b, c, d;
 
-  __asm__ volatile("cpuid"
+  __asm __volatile("cpuid"
                    : "=a"(a), "=b"(b), "=c"(c), "=d"(d)
                    : "a"(0x80000000u));
   if (a < 0x80000001u)
     return 0;
-  __asm__ volatile("cpuid"
+  __asm __volatile("cpuid"
                    : "=a"(a), "=b"(b), "=c"(c), "=d"(d)
                    : "a"(0x80000001u));
   return (d & (1u << 26)) != 0;
 }
 
-// identity map for the switch itself, the direct map and the kernel image.
-// the kernel rebuilds all of this over the full memory map once it runs.
 static uint32 paging_setup(void) {
   uint32 i;
 
@@ -192,59 +260,136 @@ static uint32 paging_setup(void) {
   return vtophys(pml4);
 }
 
-// bytes of ram following base inside its own range
-static uint64 ram_room(uint64 base) {
+// all of [lo, hi) is E820 RAM
+static int ram_covers(uint64 lo, uint64 hi) {
   uint32 i;
+  int progress;
+
+  while (lo < hi) {
+    progress = 0;
+    for (i = 0; i < bi.memranges; i++)
+      if (bi.mem[i].type == FNU_MEM_RAM && bi.mem[i].base <= lo &&
+          bi.mem[i].base + bi.mem[i].length > lo) {
+        lo = bi.mem[i].base + bi.mem[i].length;
+        progress = 1;
+      }
+    if (!progress)
+      return 0;
+  }
+  return 1;
+}
+
+// highest E820 ram run under 4 GB that dodges avoid[], or 0
+static uint64 place_high(uint64 size, uint64 (*avoid)[2], int navoid) {
+  uint64 best = 0, top, base;
+  uint32 i;
+  int j, moved;
 
   for (i = 0; i < bi.memranges; i++) {
     if (bi.mem[i].type != FNU_MEM_RAM)
       continue;
-    if (base >= bi.mem[i].base && base < bi.mem[i].base + bi.mem[i].length)
-      return bi.mem[i].base + bi.mem[i].length - base;
+    top = bi.mem[i].base + bi.mem[i].length;
+    if (top > LOW_4G)
+      top = LOW_4G;
+    for (;;) {
+      top &= ~0xfffull;
+      if (top < size || (base = top - size) < bi.mem[i].base || base < FLOOR)
+        break;
+      for (moved = 0, j = 0; j < navoid; j++)
+        if (base < avoid[j][1] && avoid[j][0] < top) {
+          top = avoid[j][0];
+          moved = 1;
+          break;
+        }
+      if (!moved) {
+        if (base > best)
+          best = base;
+        break;
+      }
+    }
   }
-  return 0;
+  return best;
 }
 
-static uint64 load_kernel(uint32 *end) {
+static uint64 stage, stage_len; // where the kernel file waits for its place
+
+// file up high, and where its segments land
+static uint64 read_kernel(uint64 *lo, uint64 *hi, uint32 *fsize) {
   struct elfhdr eh;
   struct proghdr ph;
-  uint32 i, top = 0;
+  uint32 i, need;
 
-  if (fat_load("/fnu/kernel", STAGE_ADDR, STAGE_MAX, 0) < 0)
+  *lo = ~0ull;
+  *hi = 0;
+  if (fat_file_size("/fnu/kernel", &need) < 0)
     panic("no /fnu/kernel");
+  stage_len = need;
+  if ((stage = place_high(stage_len, 0, 0)) == 0)
+    panic("no memory to read the kernel into");
+  if (fat_load("/fnu/kernel", (uint32)stage, need, fsize) < 0)
+    panic("cannot read /fnu/kernel");
 
-  flat_copy(&eh, STAGE_ADDR, sizeof(eh));
+  flat_copy(&eh, (uint32)stage, sizeof(eh));
   if (eh.magic != 0x464c457fu)
     panic("kernel not elf");
   if (eh.phentsize != sizeof(ph))
     panic("bad phentsize");
 
   for (i = 0; i < eh.phnum; i++) {
-    flat_copy(&ph, STAGE_ADDR + (uint32)eh.phoff + i * sizeof(ph), sizeof(ph));
+    flat_copy(&ph, (uint32)stage + (uint32)eh.phoff + i * sizeof(ph), sizeof(ph));
     if (ph.type != 1)
       continue;
     if (ph.memsz < ph.filesz)
       panic("bad segment");
-    flat_move((uint32)ph.paddr, STAGE_ADDR + (uint32)ph.off, (uint32)ph.filesz);
-    if (ph.memsz > ph.filesz)
-      flat_zero((uint32)ph.paddr + (uint32)ph.filesz,
-                (uint32)(ph.memsz - ph.filesz));
-    if ((uint32)ph.paddr + (uint32)ph.memsz > top)
-      top = (uint32)ph.paddr + (uint32)ph.memsz;
+    if (ph.paddr < *lo)
+      *lo = ph.paddr;
+    if (ph.paddr + ph.memsz > *hi)
+      *hi = ph.paddr + ph.memsz;
   }
-  if (top == 0)
+  if (*hi == 0)
     panic("kernel has no load segments");
-
-  *end = (top + 0xfff) & ~0xfffu;
+  *lo &= ~0xfffull;
+  *hi = (*hi + 0xfff) & ~0xfffull;
+  if (!ram_covers(*lo, *hi))
+    panic("the kernel's place is not free memory");
+  if (*lo < stage + stage_len && stage < *hi)
+    panic("the kernel's place overlaps where it was read");
   return eh.entry;
 }
 
-void main(void) {
-  uint64 esp_start, esp_count, entry;
-  uint32 kend, rsize = 0, cr3;
-  uint64 room;
+// segments to their places, after the last BIOS call
+static void place_kernel(void) {
+  struct elfhdr eh;
+  struct proghdr ph;
+  uint32 i;
 
+  flat_copy(&eh, (uint32)stage, sizeof(eh));
+  for (i = 0; i < eh.phnum; i++) {
+    flat_copy(&ph, (uint32)stage + (uint32)eh.phoff + i * sizeof(ph), sizeof(ph));
+    if (ph.type != 1)
+      continue;
+    flat_move((uint32)ph.paddr, (uint32)stage + (uint32)ph.off, (uint32)ph.filesz);
+    if (ph.memsz > ph.filesz)
+      flat_zero((uint32)ph.paddr + (uint32)ph.filesz, (uint32)(ph.memsz - ph.filesz));
+  }
+}
+
+static void bios_nap(void) { bios_wait(100000); }
+
+void main(void) {
+  struct bootdisk disk;
+  struct bootenv env;
+  struct gpt_part esp;
+  char uuid[37];
+  uint64 entry;
+  uint64 klo, khi, rbase, avoid[2][2];
+  uint32 ksize = 0, rsize = 0, rneed, cr3;
+  int disk_root;
+  char num[24];
+
+  tsc0 = rdtsc();
   memset(&bi, 0, sizeof(bi));
+  logged = 0;
   bi.magic = FNU_BOOTINFO_MAGIC;
   bi.version = FNU_BOOTINFO_VERSION;
   bi.size = sizeof(bi);
@@ -264,31 +409,51 @@ void main(void) {
     panic("no memory map");
   if (bi.acpi_rsdp == 0)
     bi.acpi_rsdp = acpi_scan();
+  bi.smbios = smbios_scan();
 
-  if (gpt_find(esp_type, &esp_start, &esp_count) < 0)
+  bootdisk_open(&disk);
+  if (gpt_scan(&disk, esp_type, 0, &esp) != 0)
     panic("no esp");
-  if (fat_mount(esp_start) < 0)
+  if (fat_mount(esp.start) < 0)
     panic("esp not fat32");
+  env_init(&env, bi.env, sizeof(bi.env));
+  guid_text(esp.guid, uuid);
+  env_set(&env, "boot.partuuid", uuid);
+  disk_root = root_env(&disk, &env) == 0;
+  autoboot(&env, bios_getkey, bios_nap);
 
-  if (ram_room(STAGE_ADDR) < STAGE_MAX)
-    panic("not enough ram");
+  entry = read_kernel(&klo, &khi, &ksize);
+  putdec(num, ksize >> 10);
+  putstr("boot: kernel ");
+  putstr(num);
+  putstr(" KB\n");
 
-  entry = load_kernel(&kend);
-
-  room = ram_room(kend);
-  room = room > KERNEL_SLACK ? room - KERNEL_SLACK : 0;
-  if (room > 0xf0000000ull)
-    room = 0xf0000000ull;
-  if (fat_load("/fnu/ramdisk", kend, (uint32)room, &rsize) == 0 &&
-      rsize != 0) {
-    bi.module[0].base = kend;
-    bi.module[0].size = rsize;
-    memcpy(bi.module[0].name, "ramdisk", 8);
-    bi.modules = 1;
+  // the live root only; a root on disk needs none
+  if ((!disk_root || env_true(&env, "ramdisk_load")) &&
+      fat_file_size("/fnu/ramdisk", &rneed) == 0 && rneed != 0) {
+    avoid[0][0] = stage;
+    avoid[0][1] = stage + stage_len;
+    avoid[1][0] = klo;
+    avoid[1][1] = khi;
+    if ((rbase = place_high(rneed, avoid, 2)) == 0)
+      putstr("boot: no room for the ramdisk\n");
+    else if (fat_load("/fnu/ramdisk", (uint32)rbase, rneed, &rsize) == 0 && rsize != 0) {
+      bi.module[0].base = rbase;
+      bi.module[0].size = rsize;
+      memcpy(bi.module[0].name, "ramdisk", 8);
+      bi.modules = 1;
+      putdec(num, rsize >> 10);
+      putstr("boot: ramdisk ");
+      putstr(num);
+      putstr(" KB\n");
+    }
   }
 
   video_setup(&bi);
 
+  // no BIOS from here on
+  usb_handoff();
+  place_kernel();
   cr3 = paging_setup();
   enter_long(entry, cr3, vtophys(&bi));
 }

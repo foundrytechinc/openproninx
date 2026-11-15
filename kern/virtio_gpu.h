@@ -55,14 +55,14 @@ struct virtio_gpu_ctrl_hdr {
   uint64_t fence_id;
   uint32_t ctx_id;
   uint32_t padding;
-} __attribute__((packed));
+} __packed;
 
 struct virtio_gpu_rect {
   uint32_t x;
   uint32_t y;
   uint32_t width;
   uint32_t height;
-} __attribute__((packed));
+} __packed;
 
 #define VIRTIO_GPU_MAX_SCANOUTS 16
 
@@ -70,12 +70,12 @@ struct virtio_gpu_display_one {
   struct virtio_gpu_rect rect;
   uint32_t enabled;
   uint32_t flags;
-} __attribute__((packed));
+} __packed;
 
 struct virtio_gpu_resp_display_info {
   struct virtio_gpu_ctrl_hdr hdr;
   struct virtio_gpu_display_one pmodes[VIRTIO_GPU_MAX_SCANOUTS];
-} __attribute__((packed));
+} __packed;
 
 struct virtio_gpu_resource_create_2d {
   struct virtio_gpu_ctrl_hdr hdr;
@@ -83,39 +83,39 @@ struct virtio_gpu_resource_create_2d {
   uint32_t format;
   uint32_t width;
   uint32_t height;
-} __attribute__((packed));
+} __packed;
 
 struct virtio_gpu_mem_entry {
   uint64_t addr;
   uint32_t length;
   uint32_t padding;
-} __attribute__((packed));
+} __packed;
 
 struct virtio_gpu_resource_attach_backing {
   struct virtio_gpu_ctrl_hdr hdr;
   uint32_t resource_id;
   uint32_t nr_entries;
   struct virtio_gpu_mem_entry entries[1];
-} __attribute__((packed));
+} __packed;
 
 struct virtio_gpu_resource_detach_backing {
   struct virtio_gpu_ctrl_hdr hdr;
   uint32_t resource_id;
   uint32_t padding;
-} __attribute__((packed));
+} __packed;
 
 struct virtio_gpu_resource_unref {
   struct virtio_gpu_ctrl_hdr hdr;
   uint32_t resource_id;
   uint32_t padding;
-} __attribute__((packed));
+} __packed;
 
 struct virtio_gpu_set_scanout {
   struct virtio_gpu_ctrl_hdr hdr;
   struct virtio_gpu_rect rect;
   uint32_t scanout_id;
   uint32_t resource_id;
-} __attribute__((packed));
+} __packed;
 
 struct virtio_gpu_transfer_to_host_2d {
   struct virtio_gpu_ctrl_hdr hdr;
@@ -123,40 +123,42 @@ struct virtio_gpu_transfer_to_host_2d {
   uint64_t offset;
   uint32_t resource_id;
   uint32_t padding;
-} __attribute__((packed));
+} __packed;
 
 struct virtio_gpu_resource_flush {
   struct virtio_gpu_ctrl_hdr hdr;
   struct virtio_gpu_rect rect;
   uint32_t resource_id;
   uint32_t padding;
-} __attribute__((packed));
+} __packed;
+
+#define VTGPU_QSIZE 16
 
 struct vring_desc {
   uint64_t address;
   uint32_t length;
   uint16_t flags;
   uint16_t next;
-} __attribute__((packed));
+} __packed;
 
 struct vring_avail {
   uint16_t flags;
   uint16_t index;
-  uint16_t ring[16];
-} __attribute__((packed));
+  uint16_t ring[VTGPU_QSIZE];
+} __packed;
 
 struct vring_used_element {
   uint32_t id;
   uint32_t length;
-} __attribute__((packed));
+} __packed;
 
 struct vring_used {
   uint16_t flags;
   uint16_t index;
-  struct vring_used_element ring[16];
-} __attribute__((packed));
+  struct vring_used_element ring[VTGPU_QSIZE];
+} __packed;
 
-// VirtIO PCI Modern Capabilities
+// virtio pci capabilities
 #define VIRTIO_PCI_CAP_COMMON_CFG 1
 #define VIRTIO_PCI_CAP_NOTIFY_CFG 2
 #define VIRTIO_PCI_CAP_ISR_CFG    3
@@ -189,9 +191,8 @@ struct virtio_pci_common_cfg {
   uint64_t queue_device;
   uint16_t queue_notif_config_data;
   uint16_t queue_reset;
-} __attribute__((packed));
+} __packed;
 
-// Driver API
 int virtio_gpu_driver_init(void);
 int virtio_gpu_available(void);
 void *virtio_gpu_framebuffer(void);

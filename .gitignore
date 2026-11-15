@@ -12,20 +12,21 @@ kern/vectors.S
 # Generated boot and kernel blobs
 bootblock
 entryother
-initcode
-initcode.out
 kernel
 kernelmemfs
 mkfs
 
-# Debugger and run artefacts
-.gdbinit
+# run artefacts
 qemu.log
 
 # Editor leftovers
 *~
 _*
 
-# Development-only reference checkout used to audit the UFS2 on-disk format.
-# Deliberately not an embedded FreeBSD source dependency.
-third_party/freebsd-src/
+# needed, though the patterns above would take them
+!etc/rc.d/
+!include/**/_*.h
+!lib/libc/**/_*
+
+# reference sources, read only, never built
+refs/

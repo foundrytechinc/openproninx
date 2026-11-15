@@ -1,56 +1,113 @@
-# Video and Framebuffer Console
+# Video and console
 
-OpenProninx provides a high-performance kernel text console rendered into a linear framebuffer across both BIOS and UEFI boot paths, supporting multiple color depths, dynamic OpenBSD Spleen fonts, virtual terminals, and runtime mode switching.
+The console draws text into a linear framebuffer. There are four virtual
+terminals, `/dev/tty1` to `tty4`. Each has its own cells, scrollback and
+FreeBSD `teken` instance (xterm escape sequences, UTF-8, colours). Only the
+front one is painted.
 
-## Boot & Display Architecture
+Pseudo terminals (`/dev/ttypN`, `/dev/ptypN`) and serial lines
+(`/dev/ttyu0` to `ttyu3`) use the same line discipline, `kern/tty.c`,
+written after OpenBSD's. Ptys are made eight at a time through `/dev/ptm`,
+up to 992.
 
-1. **BIOS Boot Path:**
-   - BIOS stage2 `video.c` uses VBE 2.0+ (`int 0x10`) and EDID queries to discover native panel resolutions.
-   - `coreboot.c` provides direct framebuffer and hardware data extraction on coreboot, libreboot, and GNUboot payloads.
-2. **UEFI Boot Path:**
-   - `boot/uefi` initializes the UEFI Graphics Output Protocol (GOP), records the physical framebuffer aperture, dimensions, stride, and pixel format into `bootinfo`.
-3. **Format & Aperture Support:**
-   - 64-bit physical framebuffer aperture mapping via `ioremap_wc()` into kernel `IOMAP`.
-   - Native rendering support for **15 bpp, 16 bpp (RGB565), 24 bpp (RGB888), and 32 bpp (ARGB8888)** color layouts.
+Kernel messages go to the first screen and the first serial line.
+`/dev/console` is the serial line if the loader's `console` starts with
+`comconsole` or there is no screen, otherwise the first screen. `/dev/tty`
+is the session's terminal.
 
----
+`stty` and `tail` are our own. `stty -g` prints settings it can read back.
+`tail -f` reopens a file that was replaced.
 
-## Virtual Terminals (VTs) & Device Nodes
+## Framebuffer
 
-- **4 Virtual Terminals:** The kernel maintains 4 independent virtual terminals (`struct vt`).
-- **VT Switching:** Switch active terminals instantaneously using **`CTRL + ALT + F1`** through **`CTRL + ALT + F4`**. Scancodes `0x3b..0x3e` are translated in `kern/kbd.c` into `KBD_VT_BASE+n` (0x200), preventing any conflict with text characters.
-- **Device Node Mapping:**
-  - `/dev/tty1`, `/dev/tty2`, `/dev/tty3`, `/dev/tty4` are assigned to each specific virtual terminal.
-  - `/dev/console` dynamically follows the currently active foreground terminal.
+- BIOS: `boot/video.c` reads the EDID and picks the VBE mode closest to the
+  panel's native size, or 1024x768 if there is no EDID. `VBE_WIDTH` and
+  `VBE_HEIGHT` force a size. Under QEMU the DISPI registers take any size.
+- UEFI: `boot/uefi/video.c` does the same with GOP.
+- coreboot: the framebuffer from the coreboot table.
+- virtio-gpu: drawing goes to RAM and changed rectangles are flushed.
 
----
+`kern/framebuffer.c` maps the framebuffer write-combining. Without one the
+console uses VGA text mode at `0xb8000`.
 
-## Typography & Dynamic Spleen Fonts
+## Fonts
 
-OpenProninx imports four typeface sizes from the OpenBSD **Spleen** font family (`kern/font.c`, `kern/font.h`):
-- **Spleen 5x8**, **8x16**, **12x24**, and **16x32**.
-- The font size is dynamically selected at boot and mode switch based on screen width (matching OpenBSD `rasops` behavior) to preserve ideal terminal column counts (80–160 columns) across low-res VGA to 4K displays.
+`kern/font_spleen.c` has Spleen 2.2.0 in 8x16, 12x24, 16x32 and 32x64 with
+Latin, Cyrillic, box drawing and punctuation. The size depends on screen
+width, as in OpenBSD's `rasops_init`. `tools/fontcvt` builds the file from
+the BDF fonts: `bmake font SPLEEN=<dir>`.
 
----
+Characters missing from the font fall back to a close ASCII one, then `?`.
 
-## High-Performance Rendering & Zero-Lag Architecture
+## Drawing
 
-### 1. Page Attribute Table (PAT) & Write-Combining (WC)
-In `kern/vm.c`, the kernel configures `IA32_PAT` MSR (`0x277`) to map PA1 to Write-Combining (`0x01`). The framebuffer virtual memory region is mapped via `ioremap_wc()`. Writes to VRAM coalesce into 64-byte burst PCIe transactions.
+The screen is kept in RAM and video memory is only written, never read.
+Only changed cells are redrawn and only changed scanline spans are copied.
+A kernel thread repaints 25 times a second (`CONSOLE_REFRESH_HZ`), so heavy
+output costs one repaint. Keyboard echo is immediate.
 
-### 2. RAM Shadow Buffer & Dirty Span Tracking
-Physical video memory is strictly **write-only** to prevent hypervisor VM-Exit traps and bus wait states on read.
-- `kern/framebuffer.c` maintains a primary RAM shadow buffer.
-- Screen updates track dirty spans (bounding boxes of modified text cells), streaming only modified rectangular regions directly to VRAM in contiguous scanlines.
+## Keyboard
 
-### 3. Runtime Video Mode Switching (Long Mode Real-Mode Thunk)
-On BIOS systems, the kernel can switch video modes without rebooting:
-- `kern/rmtramp.S`, `kern/realmode.c`, and `kern/vesa.c` implement a long-mode to 16-bit real-mode thunk (inspired by the 9front architecture).
-- Userland can query available display modes via `ioctl(fd, FBIOGET_MODELIST, &modelist)` and inspect or switch modes using the `fbset` utility.
+The keyboard code is FreeBSD's `kbd(4)` and `atkbd(4)`. USB keyboards
+(`kern/usb/ukbd.c`) produce the same scan codes and use the same tables,
+with keys and LEDs found from the HID report descriptor.
 
----
+`kern/kbd.c` holds the keymap: 256 keys, eight columns, AltGr, dead keys and
+alt-keypad input. The default is the US map. All of FreeBSD's `vt` keymaps
+are in `/usr/share/vt/keymaps/`.
 
-## Boundaries & Limitations
-- The framebuffer is kernel-managed for text virtual terminals and console output.
-- No userspace accelerated 3D graphics APIs (OpenGL/Vulkan) are present. Standard terminal I/O flows through standard Unix streams (`stdin`/`stdout`/`stderr`) and ANSI escape sequences.
+Alt-F1 to Alt-F4 switch terminals. Ctrl-Alt-Delete goes to init. Left Alt
+sends ESC first.
 
+`kbdcontrol(1)` loads keymaps (`-l ru`), dumps them (`-d`, `-x`, `-L`), sets
+the repeat rate (`-r`) and function keys (`-f`), and shows the keyboard
+(`-i`). The keyboard ioctls only work on a console terminal. A pty or serial
+line returns `FNU_ERR_BADREQUEST`.
+
+Backspace sends DEL and Ctrl-H also erases (`VERASE2`).
+
+## Mouse
+
+`moused(8)` reads the mice and the console draws the pointer.
+
+- Each mouse is `/dev/wsmouseN`. `ums` handles USB, `psm` PS/2.
+- `moused` opens all of them, picks up new ones from `/dev/hotplug`, and
+  handles acceleration, button mapping, three-button emulation, the wheel and
+  trackpoint scrolling. It writes to `/dev/consolectl`.
+- `/dev/sysmouse` gives the events in MouseSystems format for programs.
+- Left button selects (double click for a word, triple for a line), right
+  extends, middle pastes. Programs that send `ESC [ ? 1000 h` get xterm
+  mouse reports. `vidcontrol -m on|off` shows or hides the pointer.
+
+## PS/2
+
+`kern/psm.c` and `kern/atkbdc.c` follow FreeBSD's `psm(4)` and `atkbdc(4)`:
+the same probe order, sync checking, Synaptics and Elantech touchpads (taps,
+scrolling, palm detection, clickpads) and the TrackPoint behind them. The
+`hw.psm.*` sysctls use FreeBSD's names. `/dev/psm0` and `/dev/bpsm0` give
+the raw device. There is no evdev.
+
+## Video modes
+
+`vidcontrol -i mode` lists modes, `-i active` shows the current one, and
+`vidcontrol <width>x<height>` switches. These ioctls and `CONSMOUSE` only
+work on a console terminal, so an ssh session cannot change the screen.
+
+- QEMU: any size that fits.
+- BIOS: modes from the video BIOS, called in real mode through
+  `kern/realmode.c`.
+- UEFI: only the mode the firmware set.
+
+After S3 under UEFI the firmware does not restore the display. The UEFI
+loader keeps the PCI option ROMs, and the kernel runs the display ROM in
+x86emu to set the mode again. Without a ROM the screen stays dark after S3,
+so `auto` uses idle sleep there (see `doc/ACPI.md`).
+
+## Other
+
+- The framebuffer belongs to the kernel. There is no `/dev/fb`.
+- Scroll Lock enters the scrollback (1000 lines). Page Up/Down, arrows,
+  Home and End move, Scroll Lock leaves.
+- `kern.vt.kbd_halt`, `kbd_poweroff`, `kbd_reboot` and `kbd_panic` enable
+  or disable the key combinations.
+- `TIOCGWINSZ` returns the size in cells and pixels.

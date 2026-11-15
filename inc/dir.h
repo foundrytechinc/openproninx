@@ -3,14 +3,11 @@
 
 #include "inc/types.h"
 
-#define DIRSIZ 14 // fs.img fixed-width name
-#define MAXNAMLEN 255 // vfs pathname buffer
-#define NAMEBUFSZ (MAXNAMLEN + 1)
-#define MAXPATHLEN 512
+#include "inc/dirent.h"
 
-struct dirent {
-  ushort inum;
-  char name[DIRSIZ];
-};
+#define NAMEBUFSZ (FNU_NAMELEN_MAX + 1)
+#ifndef MAXPATHLEN
+#define MAXPATHLEN FNU_PATHLEN_MAX
+#endif
 
-#endif /* ifndef PRONINX_X86_64_DIR_H */
+#endif

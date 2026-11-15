@@ -1,254 +1,251 @@
 #include "inc/syscall.h"
 #include "buf.h"
 #include "defs.h"
+#include "memlayout.h"
+#include "mmu.h"
 #include "proc.h"
 
-// User code makes a system call with INT T_SYSCALL.
-// System call number in %rax.
-// Arguments passed in registers: rdi, rsi, rdx, rcx, r8, r9.
-// Return value in %rax.
+// INT T_SYSCALL
 
-// Fetch the int at addr from the current process.
-int fetchint(uintptr_t addr, uint64_t *ip) {
-  struct proc *curproc = myproc();
+int sys_exit(struct proc *, const register_t *, register_t *);
+int sys_fork(struct proc *, const register_t *, register_t *);
+int sys_exec(struct proc *, const register_t *, register_t *);
+int sys_wait(struct proc *, const register_t *, register_t *);
+int sys_signal(struct proc *, const register_t *, register_t *);
+int sys_procids(struct proc *, const register_t *, register_t *);
+int sys_session_new(struct proc *, const register_t *, register_t *);
+int sys_pgroup_set(struct proc *, const register_t *, register_t *);
+int sys_ident_get(struct proc *, const register_t *, register_t *);
+int sys_ident_set(struct proc *, const register_t *, register_t *);
+int sys_niceness(struct proc *, const register_t *, register_t *);
+int sys_createmask(struct proc *, const register_t *, register_t *);
+int sys_limit(struct proc *, const register_t *, register_t *);
+int sys_usage(struct proc *, const register_t *, register_t *);
+int sys_timer(struct proc *, const register_t *, register_t *);
+int sys_sleep(struct proc *, const register_t *, register_t *);
+int sys_halt(struct proc *, const register_t *, register_t *);
+int sys_reboot(struct proc *, const register_t *, register_t *);
+int sys_poweroff(struct proc *, const register_t *, register_t *);
+int sys_ptrace(struct proc *, const register_t *, register_t *);
+int sys_sigact(struct proc *, const register_t *, register_t *);
+int sys_sigmask(struct proc *, const register_t *, register_t *);
+int sys_sigraised(struct proc *, const register_t *, register_t *);
+int sys_sigtake(struct proc *, const register_t *, register_t *);
+int sys_sigpause(struct proc *, const register_t *, register_t *);
+int sys_sigreturn(struct proc *, const register_t *, register_t *);
+int sys_altstack(struct proc *, const register_t *, register_t *);
+int sys_thread_start(struct proc *, const register_t *, register_t *);
+int sys_thread_exit(struct proc *, const register_t *, register_t *);
+int sys_thread_tcb(struct proc *, const register_t *, register_t *);
+int sys_thread_id(struct proc *, const register_t *, register_t *);
+int sys_thread_yield(struct proc *, const register_t *, register_t *);
+int sys_futex(struct proc *, const register_t *, register_t *);
+int sys_read(struct proc *, const register_t *, register_t *);
+int sys_write(struct proc *, const register_t *, register_t *);
+int sys_seek(struct proc *, const register_t *, register_t *);
+int sys_close(struct proc *, const register_t *, register_t *);
+int sys_dup(struct proc *, const register_t *, register_t *);
+int sys_pipe(struct proc *, const register_t *, register_t *);
+int sys_ioctl(struct proc *, const register_t *, register_t *);
+int sys_fdstate_get(struct proc *, const register_t *, register_t *);
+int sys_fdstate_set(struct proc *, const register_t *, register_t *);
+int sys_ready(struct proc *, const register_t *, register_t *);
+int sys_flush(struct proc *, const register_t *, register_t *);
+int sys_readdir(struct proc *, const register_t *, register_t *);
+int sys_eventq(struct proc *, const register_t *, register_t *);
+int sys_events(struct proc *, const register_t *, register_t *);
+int sys_open(struct proc *, const register_t *, register_t *);
+int sys_getattr(struct proc *, const register_t *, register_t *);
+int sys_setattr(struct proc *, const register_t *, register_t *);
+int sys_make(struct proc *, const register_t *, register_t *);
+int sys_remove(struct proc *, const register_t *, register_t *);
+int sys_link(struct proc *, const register_t *, register_t *);
+int sys_rename(struct proc *, const register_t *, register_t *);
+int sys_readlink(struct proc *, const register_t *, register_t *);
+int sys_chdir(struct proc *, const register_t *, register_t *);
+int sys_access(struct proc *, const register_t *, register_t *);
+int sys_pathconf(struct proc *, const register_t *, register_t *);
+int sys_pathof(struct proc *, const register_t *, register_t *);
+int sys_mount(struct proc *, const register_t *, register_t *);
+int sys_unmount(struct proc *, const register_t *, register_t *);
+int sys_fsstat(struct proc *, const register_t *, register_t *);
+int sys_swapon(struct proc *, const register_t *, register_t *);
+int sys_swapoff(struct proc *, const register_t *, register_t *);
+int sys_unveil(struct proc *, const register_t *, register_t *);
+int sys_map(struct proc *, const register_t *, register_t *);
+int sys_unmap(struct proc *, const register_t *, register_t *);
+int sys_protect(struct proc *, const register_t *, register_t *);
+int sys_memsync(struct proc *, const register_t *, register_t *);
+int sys_memuse(struct proc *, const register_t *, register_t *);
+int sys_socket(struct proc *, const register_t *, register_t *);
+int sys_socketpair(struct proc *, const register_t *, register_t *);
+int sys_bind(struct proc *, const register_t *, register_t *);
+int sys_listen(struct proc *, const register_t *, register_t *);
+int sys_accept(struct proc *, const register_t *, register_t *);
+int sys_connect(struct proc *, const register_t *, register_t *);
+int sys_send(struct proc *, const register_t *, register_t *);
+int sys_recv(struct proc *, const register_t *, register_t *);
+int sys_shutdown(struct proc *, const register_t *, register_t *);
+int sys_sockaddr(struct proc *, const register_t *, register_t *);
+int sys_sockopt_set(struct proc *, const register_t *, register_t *);
+int sys_sockopt_get(struct proc *, const register_t *, register_t *);
+int sys_info(struct proc *, const register_t *, register_t *);
+int sys_procinfo(struct proc *, const register_t *, register_t *);
+int sys_hwinfo(struct proc *, const register_t *, register_t *);
+int sys_diskinfo(struct proc *, const register_t *, register_t *);
+int sys_netinfo(struct proc *, const register_t *, register_t *);
+int sys_netconfig(struct proc *, const register_t *, register_t *);
+int sys_rtctime(struct proc *, const register_t *, register_t *);
+int sys_gettime(struct proc *, const register_t *, register_t *);
+int sys_random(struct proc *, const register_t *, register_t *);
+int sys_sysctl(struct proc *, const register_t *, register_t *);
+int sys_sysctlnode(struct proc *, const register_t *, register_t *);
+int sys_pledge(struct proc *, const register_t *, register_t *);
+int sys_sendsyslog(struct proc *, const register_t *, register_t *);
+int sys_flock(struct proc *, const register_t *, register_t *);
+int sys_settime(struct proc *, const register_t *, register_t *);
+int sys_slewtime(struct proc *, const register_t *, register_t *);
 
-  if (addr >= curproc->sz || addr + 8 > curproc->sz) {
-    cprintf("fetchint failed: sz: %d, addr: 0x%x\n", curproc->sz, addr);
-    return -1;
-  }
-  *ip = *((uint64_t *)addr);
-  return 0;
-}
-
-// Fetch the nul-terminated string at addr from the current process.
-// Doesn't actually copy the string - just sets *pp to point at it.
-// Returns length of string, not including nul.
-int fetchstr(uintptr_t addr, char **pp) {
-  char *s, *ep;
-  struct proc *curproc = myproc();
-
-  if (addr >= curproc->sz)
-    return -1;
-  *pp = (char *)addr;
-  ep = (char *)curproc->sz;
-  for (s = *pp; s < ep; s++) {
-    if (*s == 0)
-      return s - *pp;
-  }
-  return -1;
-}
-
-// Fetch the nth 64-bit system call argument.
-int arg(int n, uint64_t *ip) {
-  uint64_t v;
-
-  switch (n) {
-  case 0: v = myproc()->tf->rdi; break;
-  case 1: v = myproc()->tf->rsi; break;
-  case 2: v = myproc()->tf->rdx; break;
-  case 3: v = myproc()->tf->rcx; break;
-  case 4: v = myproc()->tf->r8;  break;
-  case 5: v = myproc()->tf->r9;  break;
-  default:
-    cprintf("arg index out of range (0..5)\n");
-    return -1;
-  }
-
-  *ip = v;
-  return 0;
-}
-
-// Fetch the nth 32-bit system call argument.
-int argint(int n, int *ip) {
-  uint64_t v;
-  if (arg(n, &v) < 0)
-    return -1;
-  *ip = (int64_t)v;
-  return 0;
-}
-
-// Fetch the nth word-sized system call argument as a pointer
-// to a block of memory of size bytes. Check that the pointer
-// lies within the process address space.
-int argptr(int n, char **pp, int size) {
-  uintptr_t i;
-  struct proc *curproc = myproc();
-
-  if (arg(n, &i) < 0)
-    return -1;
-  if (size < 0 || i >= curproc->sz || i + size > curproc->sz)
-    return -1;
-  *pp = (char *)i;
-  return 0;
-}
-
-// Fetch the nth word-sized system call argument as a string pointer.
-// Check that the pointer is valid and the string is nul-terminated.
-// (There is no shared writable memory, so the string can't change
-// between this check and being used by the kernel.)
-int argstr(int n, char **pp) {
-  uintptr_t addr;
-  if (arg(n, (uint64_t *)&addr) < 0)
-    return -1;
-  return fetchstr(addr, pp);
-}
-
-/* ========================================================================== */
-/* STABLE CORE ABI syscall declarations                                       */
-/* ========================================================================== */
-extern int64_t sys_fork(void);
-extern int64_t sys_exit(void);
-extern int64_t sys_wait(void);
-extern int64_t sys_waitpid(void);
-extern int64_t sys_pipe(void);
-extern int64_t sys_read(void);
-extern int64_t sys_kill(void);
-extern int64_t sys_signal(void);
-extern int64_t sys_sigcatch(void);
-extern int64_t sys_sigwait(void);
-extern int64_t sys_halt(void);
-extern int64_t sys_hwinfo(void);
-extern int64_t sys_diskinfo(void);
-extern int64_t sys_exec(void);
-extern int64_t sys_stat(void);
-extern int64_t sys_chdir(void);
-extern int64_t sys_getcwd(void);
-extern int64_t sys_dup(void);
-extern int64_t sys_getpid(void);
-extern int64_t sys_sbrk(void);
-extern int64_t sys_sleep(void);
-extern int64_t sys_open(void);
-extern int64_t sys_write(void);
-extern int64_t sys_mknod(void);
-extern int64_t sys_unlink(void);
-extern int64_t sys_link(void);
-extern int64_t sys_mkdir(void);
-extern int64_t sys_close(void);
-extern int64_t sys_malloc(void);
-extern int64_t sys_free(void);
-extern int64_t sys_info(void);
-extern int64_t sys_reboot(void);
-extern int64_t sys_poweroff(void);
-extern int64_t sys_procinfo(void);
-extern int64_t sys_ioctl(void);
-extern int64_t sys_getdents(void);
-extern int64_t sys_getuid(void);
-extern int64_t sys_setuid(void);
-extern int64_t sys_setforeground(void);
-extern int64_t sys_chmod(void);
-extern int64_t sys_chown(void);
-
-/* ========================================================================== */
-/* EXPERIMENTAL / NON-ABI syscall declarations                                */
-/* (lwIP transport handles, in-kernel auth -- subject to redesign)            */
-/* ========================================================================== */
-extern int64_t sys_ping(void);
-extern int64_t sys_udp_open(void);
-extern int64_t sys_udp_bind(void);
-extern int64_t sys_udp_sendto(void);
-extern int64_t sys_udp_recvfrom(void);
-extern int64_t sys_udp_close(void);
-extern int64_t sys_netinfo(void);
-extern int64_t sys_netconfig(void);
-extern int64_t sys_tcp_open(void);
-extern int64_t sys_tcp_bind(void);
-extern int64_t sys_tcp_listen(void);
-extern int64_t sys_tcp_accept(void);
-extern int64_t sys_tcp_connect(void);
-extern int64_t sys_tcp_send(void);
-extern int64_t sys_tcp_recv(void);
-extern int64_t sys_tcp_close(void);
-extern int64_t sys_dns_resolve(void);
-extern int64_t sys_login(void);
-extern int64_t sys_doas_auth(void);
-extern int64_t sys_useradd(void);
-extern int64_t sys_passwd(void);
-extern int64_t sys_users(void);
-/* FNU userland utility syscalls — implemented in kclock.c / fs.c */
-extern int64_t sys_rtctime(void);
-extern int64_t sys_df(void);
-
-static int64_t (*syscalls[])(void) = {
-    /* ---- Stable Core ABI ---- */
-    [SYS_exit]          = sys_exit,
-    [SYS_read]          = sys_read,
-    [SYS_write]         = sys_write,
-    [SYS_open]          = sys_open,
-    [SYS_close]         = sys_close,
-    [SYS_fork]          = sys_fork,
-    [SYS_wait]          = sys_wait,
-    [SYS_waitpid]       = sys_waitpid,
-    [SYS_kill]          = sys_kill,
-    [SYS_signal]        = sys_signal,
-    [SYS_sigcatch]      = sys_sigcatch,
-    [SYS_sigwait]       = sys_sigwait,
-    [SYS_halt]          = sys_halt,
-    [SYS_hwinfo]        = sys_hwinfo,
-    [SYS_diskinfo]      = sys_diskinfo,
-    [SYS_exec]          = sys_exec,
-    [SYS_sbrk]          = sys_sbrk,
-    [SYS_malloc]        = sys_malloc,
-    [SYS_free]          = sys_free,
-    [SYS_stat]          = sys_stat,
-    [SYS_pipe]          = sys_pipe,
-    [SYS_info]          = sys_info,
-    [SYS_reboot]        = sys_reboot,
-    [SYS_procinfo]      = sys_procinfo,
-    [SYS_ioctl]         = sys_ioctl,
-    [SYS_getdents]      = sys_getdents,
-    [SYS_link]          = sys_link,
-    [SYS_mkdir]         = sys_mkdir,
-    [SYS_unlink]        = sys_unlink,
-    [SYS_dup]           = sys_dup,
-    [SYS_mknod]         = sys_mknod,
-    [SYS_chdir]         = sys_chdir,
-    [SYS_getcwd]        = sys_getcwd,
-    [SYS_getpid]        = sys_getpid,
-    [SYS_sleep]         = sys_sleep,
-    [SYS_getuid]        = sys_getuid,
-    [SYS_setuid]        = sys_setuid,
-    [SYS_setforeground] = sys_setforeground,
-    [SYS_chmod]         = sys_chmod,
-    [SYS_chown]         = sys_chown,
-    [SYS_poweroff]      = sys_poweroff,
-
-    /* ---- Experimental / Non-ABI ---- */
-    [SYS_ping]          = sys_ping,
-    [SYS_udp_open]      = sys_udp_open,
-    [SYS_udp_bind]      = sys_udp_bind,
-    [SYS_udp_sendto]    = sys_udp_sendto,
-    [SYS_udp_recvfrom]  = sys_udp_recvfrom,
-    [SYS_udp_close]     = sys_udp_close,
-    [SYS_netinfo]       = sys_netinfo,
-    [SYS_netconfig]     = sys_netconfig,
-    [SYS_tcp_open]      = sys_tcp_open,
-    [SYS_tcp_bind]      = sys_tcp_bind,
-    [SYS_tcp_listen]    = sys_tcp_listen,
-    [SYS_tcp_accept]    = sys_tcp_accept,
-    [SYS_tcp_connect]   = sys_tcp_connect,
-    [SYS_tcp_send]      = sys_tcp_send,
-    [SYS_tcp_recv]      = sys_tcp_recv,
-    [SYS_tcp_close]     = sys_tcp_close,
-    [SYS_dns_resolve]   = sys_dns_resolve,
-    [SYS_login]         = sys_login,
-    [SYS_doas_auth]     = sys_doas_auth,
-    [SYS_useradd]       = sys_useradd,
-    [SYS_passwd]        = sys_passwd,
-    [SYS_users]         = sys_users,
-    /* FNU userland utility ABIs (new in Core 0.1.5-dev FNU refresh) */
-    [SYS_rtctime]       = sys_rtctime,
-    [SYS_df]            = sys_df,
+static int (*syscalls[])(struct proc *, const register_t *, register_t *) = {
+    [SYS_exit]         = sys_exit,
+    [SYS_fork]         = sys_fork,
+    [SYS_exec]         = sys_exec,
+    [SYS_wait]         = sys_wait,
+    [SYS_signal]       = sys_signal,
+    [SYS_procids]      = sys_procids,
+    [SYS_session_new]  = sys_session_new,
+    [SYS_pgroup_set]   = sys_pgroup_set,
+    [SYS_ident_get]    = sys_ident_get,
+    [SYS_ident_set]    = sys_ident_set,
+    [SYS_niceness]     = sys_niceness,
+    [SYS_createmask]   = sys_createmask,
+    [SYS_limit]        = sys_limit,
+    [SYS_usage]        = sys_usage,
+    [SYS_timer]        = sys_timer,
+    [SYS_sleep]        = sys_sleep,
+    [SYS_halt]         = sys_halt,
+    [SYS_reboot]       = sys_reboot,
+    [SYS_poweroff]     = sys_poweroff,
+    [SYS_ptrace]       = sys_ptrace,
+    [SYS_sigact]       = sys_sigact,
+    [SYS_sigmask]      = sys_sigmask,
+    [SYS_sigraised]    = sys_sigraised,
+    [SYS_sigtake]      = sys_sigtake,
+    [SYS_sigpause]     = sys_sigpause,
+    [SYS_sigreturn]    = sys_sigreturn,
+    [SYS_altstack]     = sys_altstack,
+    [SYS_thread_start] = sys_thread_start,
+    [SYS_thread_exit]  = sys_thread_exit,
+    [SYS_thread_tcb]   = sys_thread_tcb,
+    [SYS_thread_id]    = sys_thread_id,
+    [SYS_thread_yield] = sys_thread_yield,
+    [SYS_futex]        = sys_futex,
+    [SYS_read]         = sys_read,
+    [SYS_write]        = sys_write,
+    [SYS_seek]         = sys_seek,
+    [SYS_close]        = sys_close,
+    [SYS_dup]          = sys_dup,
+    [SYS_pipe]         = sys_pipe,
+    [SYS_ioctl]        = sys_ioctl,
+    [SYS_fdstate_get]  = sys_fdstate_get,
+    [SYS_fdstate_set]  = sys_fdstate_set,
+    [SYS_ready]        = sys_ready,
+    [SYS_flush]        = sys_flush,
+    [SYS_readdir]      = sys_readdir,
+    [SYS_eventq]       = sys_eventq,
+    [SYS_events]       = sys_events,
+    [SYS_open]         = sys_open,
+    [SYS_getattr]      = sys_getattr,
+    [SYS_setattr]      = sys_setattr,
+    [SYS_make]         = sys_make,
+    [SYS_remove]       = sys_remove,
+    [SYS_link]         = sys_link,
+    [SYS_rename]       = sys_rename,
+    [SYS_readlink]     = sys_readlink,
+    [SYS_chdir]        = sys_chdir,
+    [SYS_access]       = sys_access,
+    [SYS_pathconf]     = sys_pathconf,
+    [SYS_pathof]       = sys_pathof,
+    [SYS_mount]        = sys_mount,
+    [SYS_unmount]      = sys_unmount,
+    [SYS_fsstat]       = sys_fsstat,
+    [SYS_swapon]       = sys_swapon,
+    [SYS_swapoff]      = sys_swapoff,
+    [SYS_unveil]       = sys_unveil,
+    [SYS_map]          = sys_map,
+    [SYS_unmap]        = sys_unmap,
+    [SYS_protect]      = sys_protect,
+    [SYS_memsync]      = sys_memsync,
+    [SYS_memuse]       = sys_memuse,
+    [SYS_socket]       = sys_socket,
+    [SYS_socketpair]   = sys_socketpair,
+    [SYS_bind]         = sys_bind,
+    [SYS_listen]       = sys_listen,
+    [SYS_accept]       = sys_accept,
+    [SYS_connect]      = sys_connect,
+    [SYS_send]         = sys_send,
+    [SYS_recv]         = sys_recv,
+    [SYS_shutdown]     = sys_shutdown,
+    [SYS_sockaddr]     = sys_sockaddr,
+    [SYS_sockopt_set]  = sys_sockopt_set,
+    [SYS_sockopt_get]  = sys_sockopt_get,
+    [SYS_info]         = sys_info,
+    [SYS_procinfo]     = sys_procinfo,
+    [SYS_hwinfo]       = sys_hwinfo,
+    [SYS_diskinfo]     = sys_diskinfo,
+    [SYS_netinfo]      = sys_netinfo,
+    [SYS_netconfig]    = sys_netconfig,
+    [SYS_rtctime]      = sys_rtctime,
+    [SYS_gettime]      = sys_gettime,
+    [SYS_random]       = sys_random,
+    [SYS_sysctl]       = sys_sysctl,
+    [SYS_sysctlnode]   = sys_sysctlnode,
+    [SYS_pledge]       = sys_pledge,
+    [SYS_sendsyslog]   = sys_sendsyslog,
+    [SYS_flock]        = sys_flock,
+    [SYS_settime]      = sys_settime,
+    [SYS_slewtime]     = sys_slewtime,
 };
 
 void syscall(void) {
   size_t num;
-  struct proc *curproc = myproc();
+  struct proc *p = curproc;
+  struct trapframe *tf = p->tf;
+  register_t rval[2], args[6];
+  int error;
 
-  num = curproc->tf->rax;
-  if (num < NELEM(syscalls) && syscalls[num]) {
-    curproc->tf->rax = syscalls[num]();
+  num = tf->rax;
+  p->sig_callno = num;
+  p->sig_restart = 0;
+  rval[0] = 0;
+  rval[1] = 0;
+  if (num < nitems(syscalls) && syscalls[num]) {
+    if (pledge_check(p, (int)num) < 0) {
+      pledge_fail(p, (int)num);
+      error = FNU_ERR_NOTPERMITTED;
+    } else {
+      args[0] = (register_t)tf->rdi;
+      args[1] = (register_t)tf->rsi;
+      args[2] = (register_t)tf->rdx;
+      args[3] = (register_t)tf->rcx;
+      args[4] = (register_t)tf->r8;
+      args[5] = (register_t)tf->r9;
+      error = syscalls[num](p, args, rval);
+    }
   } else {
-    cprintf("%d %s: unknown sys call %d\n", curproc->pid, curproc->name, num);
-    curproc->tf->rax = -1;
+    printf("%d %s: unknown sys call %ld\n", p->p_p->pid, p->p_p->name, (long)num);
+    error = FNU_ERR_NOCALL;
+  }
+  switch (error) {
+  case 0:
+    tf->rax = (uint64_t)rval[0];
+    tf->rflags &= ~FL_CF;
+    break;
+  case CALL_JUSTRETURN:
+    break;
+  default:
+    tf->rax = (uint64_t)error;
+    tf->rflags |= FL_CF;
+    break;
   }
 }

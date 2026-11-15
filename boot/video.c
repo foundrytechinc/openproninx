@@ -1,7 +1,5 @@
 #include "boot.h"
 
-// The size to ask for when the monitor will not say. VBE_WIDTH/VBE_HEIGHT
-// override the monitor outright, for a panel that reports nonsense.
 #ifndef VBE_FALLBACK_WIDTH
 #define VBE_FALLBACK_WIDTH 1024
 #endif
@@ -22,7 +20,7 @@ struct vbeinfo {
   uint32 mode_ptr;
   uint16 total_memory;
   uint8 rest[492];
-} __attribute__((packed));
+} __packed;
 
 struct modeinfo {
   uint16 attributes;
@@ -50,7 +48,7 @@ struct modeinfo {
   uint8 lin_alpha_size, lin_alpha_pos;
   uint32 max_clock;
   uint8 rsvd4[190];
-} __attribute__((packed));
+} __packed;
 
 _Static_assert(sizeof(struct vbeinfo) == 512, "vbeinfo");
 _Static_assert(sizeof(struct modeinfo) == 256, "modeinfo");
@@ -58,8 +56,6 @@ _Static_assert(sizeof(struct modeinfo) == 256, "modeinfo");
 static struct vbeinfo info;
 static struct modeinfo mi;
 
-// the preferred detailed timing in EDID is the panel's native size, which is
-// how the BSD loaders pick a mode instead of guessing
 static uint8 edid[128];
 
 static int edid_native(uint16 *w, uint16 *h) {
@@ -79,14 +75,13 @@ static int edid_native(uint16 *w, uint16 *h) {
     return 0;
 
   d = edid + 54;                 // first detailed timing descriptor
-  if (d[0] == 0 && d[1] == 0)    // not a timing, just a text block
+  if (d[0] == 0 && d[1] == 0)
     return 0;
   *w = (uint16)(((uint32)(d[4] & 0xf0) << 4) | d[2]);
   *h = (uint16)(((uint32)(d[7] & 0xf0) << 4) | d[5]);
   return *w >= 320 && *h >= 200 && (*w % 8) == 0;
 }
 
-// bochs dispi: the vbe mode list stops at 1024x768, this sets any size
 #define DISPI_INDEX 0x01ce
 #define DISPI_DATA 0x01cf
 #define DISPI_ID 0x0
@@ -101,12 +96,12 @@ static int edid_native(uint16 *w, uint16 *h) {
 #define DISPI_LFB_ENABLED 0x40
 
 static inline void outw16(uint16 port, uint16 v) {
-  __asm__ volatile("outw %0,%1" : : "a"(v), "d"(port));
+  __asm __volatile("outw %0,%1" : : "a"(v), "d"(port));
 }
 
 static inline uint16 inw16(uint16 port) {
   uint16 v;
-  __asm__ volatile("inw %1,%0" : "=a"(v) : "d"(port));
+  __asm __volatile("inw %1,%0" : "=a"(v) : "d"(port));
   return v;
 }
 
@@ -124,7 +119,6 @@ static int dispi_present(void) {
   return (dispi_read(DISPI_ID) & 0xfff0) == 0xb0c0;
 }
 
-// returns the pitch, or 0 if the adapter will not take the mode
 static uint32 dispi_set(uint16 w, uint16 h) {
   uint32 need = (uint32)w * h * 4;
   uint32 vram = (uint32)dispi_read(DISPI_VIDEO_MEMORY_64K) * 65536;
@@ -143,8 +137,6 @@ static uint32 dispi_set(uint16 w, uint16 h) {
   return (uint32)w * 4;
 }
 
-// a linear packed-pixel graphics mode we can actually draw into. size is not
-// part of this: nothing here decides a maximum resolution
 static int usable(const struct modeinfo *m) {
   if ((m->attributes & 0x01) == 0)
     return 0;
@@ -156,12 +148,9 @@ static int usable(const struct modeinfo *m) {
     return 0;
   if (m->memory_model != 6)
     return 0;
-  // a panel's native size is often offered at 16 bits and nothing else
   return m->bpp == 15 || m->bpp == 16 || m->bpp == 24 || m->bpp == 32;
 }
 
-// the mode the firmware already programmed. on coreboot that is the panel
-// talking, and it beats any guess we could make
 static int firmware_mode(uint16 *w, uint16 *h) {
   int mode = bios_vbe_get_mode();
 
@@ -196,7 +185,6 @@ void video_setup(struct fnu_bootinfo *bi) {
   uint32 list, best_score = 0;
   int best = -1;
 
-  // coreboot already gave us a framebuffer
   if (bi->console == FNU_CONSOLE_FRAMEBUFFER)
     return;
 
@@ -251,15 +239,13 @@ void video_setup(struct fnu_bootinfo *bi) {
     if (!usable(&mi))
       continue;
 
-    // exact beats anything; then the biggest that still fits the panel; an
-    // oversized mode only when the adapter offers nothing smaller
     if (mi.width == want_w && mi.height == want_h)
       score = 0x80000000u;
     else if (mi.width <= want_w && mi.height <= want_h)
       score = 0x40000000u + (uint32)mi.width * mi.height;
     else
       score = 0x20000000u - (uint32)mi.width * mi.height / 64;
-    score += mi.bpp;   // same size, deepest pixel wins
+    score += mi.bpp;
     if (score > best_score) {
       best_score = score;
       best = mode;
@@ -277,7 +263,6 @@ void video_setup(struct fnu_bootinfo *bi) {
 
   fill(bi, &mi);
 
-  // the linear framebuffer stays put, so the size can still be raised
   if ((bi->fb.width != want_w || bi->fb.height != want_h) && dispi_present()) {
     uint32 pitch = dispi_set(want_w, want_h);
     if (pitch != 0) {

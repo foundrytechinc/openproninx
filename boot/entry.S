@@ -1,5 +1,4 @@
-// stage2 entry. stage1 jumps here in real mode with %dl = drive and
-// %si = &part_lba in segment 0.
+// STAGE2: %dl drive, %si &part_lba
 
 	.section .entry, "awx"
 	.code16
@@ -141,5 +140,3 @@ boot_drive:
 stack:
 	.space	16384
 stack_top:
-
-	.section .note.GNU-stack,"",@progbits

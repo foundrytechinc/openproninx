@@ -1,7 +1,5 @@
 #include "boot/uefi/uefi.h"
 
-// The size to ask for when the panel will not say. VBE_WIDTH/VBE_HEIGHT
-// override it outright, exactly as on the bios path.
 #ifndef VBE_FALLBACK_WIDTH
 #define VBE_FALLBACK_WIDTH 1024
 #endif
@@ -18,7 +16,6 @@ static const struct efi_guid edid_discovered_guid = EFI_EDID_DISCOVERED_GUID;
 static uint32 want_w = VBE_FALLBACK_WIDTH;
 static uint32 want_h = VBE_FALLBACK_HEIGHT;
 
-// the preferred detailed timing in EDID is the panel's native size
 static int edid_native(const uint8 *e, uint32 size, uint32 *w, uint32 *h) {
   const uint8 *d;
   uint32 sum = 0;
@@ -56,12 +53,12 @@ static int edid_native(const uint8 *e, uint32 size, uint32 *w, uint32 *h) {
 #define DISPI_LFB_ENABLED 0x40
 
 static inline void outw16(uint16 port, uint16 v) {
-  __asm__ volatile("outw %0,%1" : : "a"(v), "d"(port));
+  __asm __volatile("outw %0,%1" : : "a"(v), "d"(port));
 }
 
 static inline uint16 inw16(uint16 port) {
   uint16 v;
-  __asm__ volatile("inw %1,%0" : "=a"(v) : "d"(port));
+  __asm __volatile("inw %1,%0" : "=a"(v) : "d"(port));
   return v;
 }
 
@@ -177,7 +174,6 @@ static void channels(struct fnu_bootinfo *bi,
   }
 }
 
-// a linear packed-pixel mode we can draw into. size is not part of this
 static int usable(const struct efi_gop_mode_info *m) {
   if (m->width == 0 || m->height == 0)
     return 0;
@@ -222,8 +218,6 @@ void video_setup(struct fnu_bootinfo *bi) {
   (void)ew;
   (void)eh;
 
-  // exact beats anything; then the biggest that still fits the panel; an
-  // oversized mode only when the adapter offers nothing smaller
   for (mode = 0; mode < gop->mode->max_mode; mode++) {
     uint32 score;
 
@@ -264,7 +258,6 @@ void video_setup(struct fnu_bootinfo *bi) {
   channels(bi, m);
   bi->console = FNU_CONSOLE_FRAMEBUFFER;
 
-  // the linear framebuffer stays put, so the size can still be raised
   if ((bi->fb.width != want_w || bi->fb.height != want_h) && dispi_present()) {
     uint32 pitch = dispi_set(want_w, want_h);
     if (pitch != 0) {

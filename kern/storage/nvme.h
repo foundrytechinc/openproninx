@@ -5,7 +5,6 @@
 #include "buf.h"
 #include "driver.h"
 
-#define NVME_MAX_NAMESPACES 8
 #define NVME_SECTOR_SIZE 512
 #define NVME_ADMIN_Q_SIZE 64
 #define NVME_IO_Q_SIZE 64
@@ -32,8 +31,8 @@
 #define NVME_REG_CSTS   0x1C // Controller Status (32-bit)
 #define NVME_REG_NSSR   0x20 // NVM Subsystem Reset (32-bit)
 #define NVME_REG_AQA    0x24 // Admin Queue Attributes (32-bit)
-#define NVME_REG_ASQ    0x28 // Admin SQ Base Address (64-bit)
-#define NVME_REG_ACQ    0x30 // Admin CQ Base Address (64-bit)
+#define NVME_REG_ASQ    0x28
+#define NVME_REG_ACQ    0x30
 #define NVME_REG_DBS    0x1000 // Doorbell registers start
 
 // CC register bits
@@ -43,7 +42,6 @@
 #define NVME_CC_IOCQES  (4U << 20) // 16 bytes (2^4)
 #define NVME_CC_IOSQES  (6U << 16) // 64 bytes (2^6)
 
-// CSTS register bits
 #define NVME_CSTS_RDY   (1U << 0)
 #define NVME_CC_SHN_MASK    (3U << 14) // Shutdown Notification
 #define NVME_CC_SHN_NORMAL  (1U << 14)
@@ -80,10 +78,7 @@ struct nvme_cqe {
 };
 
 void nvme_driver_init(void);
-void nvme_init(void);
 uint64_t nvme_size(uint ns_id);
-int nvme_read(uint ns_id, uint64_t lba, uint count, void *dst);
-int nvme_write(uint ns_id, uint64_t lba, uint count, const void *src);
 void nvmerw(struct buf *b);
 
 #endif /* PRONINX_STORAGE_NVME_H */

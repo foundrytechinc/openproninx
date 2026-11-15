@@ -1,23 +1,80 @@
+// AP START
+// where the hell are we? %cs knows
 #include "mmu.h"
-#include "memlayout.h"
+#include "apboot.h"
 
 .code16
 .globl start
 start:
+  jmp     real
+
+  .org    AP_HDR_STEP
+step:
+  .word   0
+  .org    AP_HDR_TABLES
+tables:
+  .long   0
+  .org    AP_HDR_STACK
+stack:
+  .quad   0
+  .org    AP_HDR_ENTRY
+entry:
+  .quad   0
+  .org    AP_HDR_CR3
+kcr3:
+  .quad   0
+  .org    AP_HDR_PROBE
+probe:
+  .word   0
+  .org    AP_HDR_COUNT
+count:
+  .word   0
+  .org    AP_HDR_IDS
+ids:
+  .space  AP_PROBE_MAX
+  .org    AP_HDR_END
+
+real:
   cli
-
-  xorw    %ax, %ax
+  movw    %cs, %ax
   movw    %ax, %ds
-  movw    %ax, %es
   movw    %ax, %ss
+  movw    $1, step - start
+  cmpw    $0, probe - start
+  je      1f
 
-  lgdt    gdtdesc
+  # EDK2's broadcast wakeup: say who answered, then halt
+  movl    $1, %eax
+  cpuid
+  shrl    $24, %ebx
+  movw    $1, %ax
+  lock xaddw %ax, count - start
+  cmpw    $AP_PROBE_MAX, %ax
+  jae     2f
+  movw    %ax, %si
+  movb    %bl, ids - start(%si)
+2:
+  cli
+  hlt
+  jmp     2b
+1:
 
+  xorl    %ebx, %ebx
+  movw    %cs, %bx
+  shll    $4, %ebx
+  orl     %ebx, gdtdesc - start + 2
+  orl     %ebx, gdt64desc - start + 2
+  orl     %ebx, jmp32 - start + 2
+  orl     %ebx, jmp64 - start + 1
+
+  lgdtl   gdtdesc - start
   movl    %cr0, %eax
   orl     $CR0_PE, %eax
   movl    %eax, %cr0
-
-  ljmp    $0x8, $start32
+jmp32:
+  .byte   0x66, 0xea
+  .long   start32 - start
+  .word   0x8
 
 .code32
 start32:
@@ -25,32 +82,38 @@ start32:
   movw    %ax, %ds
   movw    %ax, %es
   movw    %ax, %ss
+  movw    $2, step - start(%ebx)
 
-  # Enable PAE
   movl    %cr4, %eax
   orl     $CR4_PAE, %eax
   movl    %eax, %cr4
-
-  # Load AP boot PML4 from 0x8000
-  movl    $0x8000, %eax
+  movl    tables - start(%ebx), %eax
   movl    %eax, %cr3
 
-  # Enable Long Mode in EFER MSR
+  # EFER.LME, and NXE where the kernel's tables use it; cpuid takes %ebx
+  movl    %ebx, %edi
+  movl    $0x80000001, %eax
+  cpuid
+  movl    %edi, %ebx
+  andl    $0x100000, %edx
+  shrl    $9, %edx
+  orl     $0x100, %edx
+  movl    %edx, %esi
   movl    $0xc0000080, %ecx
   rdmsr
-  orl     $0x100, %eax
+  orl     %esi, %eax
   wrmsr
 
-  # Enable Paging (CR0.PG | CR0.PE)
   movl    %cr0, %eax
   orl     $CR0_PG, %eax
   movl    %eax, %cr0
+  movw    $3, step - start(%ebx)
 
-  # Load 64-bit GDT
-  lgdt    gdt64desc
-
-  # Far jump into 64-bit Long Mode
-  ljmp    $0x8, $start64
+  lgdtl   gdt64desc - start(%ebx)
+jmp64:
+  .byte   0xea
+  .long   start64 - start
+  .word   0x8
 
 .code64
 start64:
@@ -58,11 +121,12 @@ start64:
   movw    %ax, %ds
   movw    %ax, %es
   movw    %ax, %ss
+  movl    %ebx, %ebx
+  movw    $4, step - start(%rbx)
 
-  movabsq $0x6ff8, %rbx
-  movq    (%rbx), %rsp
-  movabsq $0x6ff0, %rbx
-  movq    (%rbx), %rax
+  movq    stack - start(%rbx), %rsp
+  movq    entry - start(%rbx), %rax
+  movq    kcr3 - start(%rbx), %rcx
   jmp     *%rax
 
 .p2align 4
@@ -70,19 +134,15 @@ gdt:
   .quad 0x0000000000000000
   .quad 0x00cf9a000000ffff
   .quad 0x00cf92000000ffff
-
 gdtdesc:
   .word gdtdesc - gdt - 1
-  .long gdt
+  .long gdt - start
 
 .p2align 4
 gdt64:
   .quad 0x0000000000000000
   .quad 0x00209a0000000000
   .quad 0x0000920000000000
-
 gdt64desc:
   .word gdt64desc - gdt64 - 1
-  .long gdt64
-
-.section .note.GNU-stack,"",@progbits
+  .long gdt64 - start

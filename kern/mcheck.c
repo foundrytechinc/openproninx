@@ -24,8 +24,6 @@
 
 static uint banks;
 
-// what the banks held when we arrived. the console does not exist yet when
-// mcheck_init runs, so it is kept and said from kmain.
 static struct mc_record {
   uint64_t status, addr, misc;
   uint bank;
@@ -35,15 +33,15 @@ static int collected;
 
 static void mc_say(const char *when, uint bank, uint64_t status, uint64_t addr,
                    uint64_t misc) {
-  cprintf("MCE: %s cpu%d bank %d status 0x%x %s%s%s", when, cpuid(), bank,
+  printf("MCE: %s cpu%d bank %d status 0x%lx %s%s%s", when, cpuid(), bank,
           status, (status & MC_STATUS_UC) ? "uncorrected" : "corrected",
           (status & MC_STATUS_PCC) ? " context-lost" : "",
           (status & MC_STATUS_OVER) ? " overflow" : "");
   if (status & MC_STATUS_ADDRV)
-    cprintf(" addr 0x%x", addr);
+    printf(" addr 0x%lx", addr);
   if (status & MC_STATUS_MISCV)
-    cprintf(" misc 0x%x", misc);
-  cprintf("\n");
+    printf(" misc 0x%lx", misc);
+  printf("\n");
 }
 
 int mcheck_report(const char *when) {
@@ -91,7 +89,6 @@ void mcheck_report_boot(void) {
            leftover[i].addr, leftover[i].misc);
 }
 
-// without CR4.MCE a machine check just resets the board
 void mcheck_init(void) {
   uint64_t cap;
   uint sig, feat, ebx, ecx, family, model, i;
@@ -122,7 +119,6 @@ void mcheck_init(void) {
       model += ((sig >> 16) & 0xf) << 4;
 
     for (i = 0; i < banks; i++) {
-      // p6 before nehalem keeps bank 0 enabled and reserved
       if (!(family == 0x6 && model < 0x1a && i == 0))
         wrmsr(MSR_MC_CTL(i), ~0ULL);
       wrmsr(MSR_MC_STATUS(i), 0);

@@ -1,5 +1,4 @@
-// MBR. Finds the fnu-boot partition in the GPT and loads stage2 at 0x10000.
-// BIOS enters at 0:0x7c00 with %dl = drive.
+// MBR: %dl drive, at 0:0x7c00
 
 #define RELOC		0x0600
 #define GPTHDR		0x0900
@@ -185,5 +184,3 @@ disk_sig:	.long	0
 ptable:		.fill	64, 1, 0
 .org 510
 	.word	0xaa55
-
-.section .note.GNU-stack,"",@progbits

@@ -3,16 +3,18 @@
 #define ATTR_LFN 0x0f
 #define ATTR_DIR 0x10
 #define EOC 0x0ffffff8u
+#define FATWIN 64 // fat sectors read at once
 
 static uint64 part_start;
 static uint32 fat_start;
+static uint32 fat_size;
 static uint32 data_start;
 static uint32 sec_per_clu;
 static uint32 root_clu;
 
 static uint8 secbuf[SECTOR];
-static uint32 fat_cached = 0xffffffffu;
-static uint8 fatbuf[SECTOR];
+static uint32 fat_first, fat_count;
+static uint8 fatbuf[FATWIN * SECTOR];
 
 static uint16 rd16(const uint8 *p) { return (uint16)(p[0] | (p[1] << 8)); }
 
@@ -39,8 +41,9 @@ int fat_mount(uint64 lba) {
 
   part_start = lba;
   fat_start = reserved;
+  fat_size = fatsz;
   data_start = reserved + nfat * fatsz;
-  fat_cached = 0xffffffffu;
+  fat_count = 0;
   return 0;
 }
 
@@ -49,14 +52,20 @@ static uint64 clu_lba(uint32 clu) {
 }
 
 static uint32 fat_next(uint32 clu) {
-  uint32 sec = fat_start + clu / (SECTOR / 4);
+  uint32 sec = clu / (SECTOR / 4), n;
 
-  if (sec != fat_cached) {
-    if (disk_read(part_start + sec, 1, fatbuf) < 0)
+  if (sec >= fat_size)
+    return EOC;
+  if (fat_count == 0 || sec < fat_first || sec >= fat_first + fat_count) {
+    n = fat_size - sec < FATWIN ? fat_size - sec : FATWIN;
+    if (disk_read(part_start + fat_start + sec, n, fatbuf) < 0) {
+      fat_count = 0;
       return EOC;
-    fat_cached = sec;
+    }
+    fat_first = sec;
+    fat_count = n;
   }
-  return rd32(fatbuf + (clu % (SECTOR / 4)) * 4) & 0x0fffffffu;
+  return rd32(fatbuf + (clu - fat_first * (SECTOR / 4)) * 4) & 0x0fffffffu;
 }
 
 // "kernel" -> "KERNEL     "
@@ -77,7 +86,6 @@ static void short_name(const char *s, uint32 n, char out[11]) {
   }
 }
 
-// finds name in the directory chain, returns its cluster
 static int dir_find(uint32 dir, const char *name, uint32 len, uint32 *clu,
                     uint32 *size, int *isdir) {
   char want[11];
@@ -108,7 +116,7 @@ static int dir_find(uint32 dir, const char *name, uint32 len, uint32 *clu,
   return -1;
 }
 
-int fat_load(const char *path, uint32 linear, uint32 limit, uint32 *size) {
+static int lookup(const char *path, uint32 *cluster, uint32 *size) {
   uint32 clu = root_clu, fsize = 0;
   int isdir = 1;
 
@@ -132,19 +140,46 @@ int fat_load(const char *path, uint32 linear, uint32 limit, uint32 *size) {
   }
   if (isdir)
     return -1;
-  // whole clusters are copied, so the last one must fit too
-  if (limit != 0 && fsize + sec_per_clu * SECTOR > limit)
+  *cluster = clu;
+  *size = fsize;
+  return 0;
+}
+
+// what a load of the file takes: whole clusters
+int fat_file_size(const char *path, uint32 *size) {
+  uint32 clu, fsize, clusz = sec_per_clu * SECTOR;
+
+  if (lookup(path, &clu, &fsize) < 0)
+    return -1;
+  *size = (fsize + clusz - 1) / clusz * clusz;
+  return 0;
+}
+
+int fat_load(const char *path, uint32 linear, uint32 limit, uint32 *size) {
+  uint32 clu, fsize;
+
+  if (lookup(path, &clu, &fsize) < 0)
+    return -1;
+  if (limit != 0 && (fsize + sec_per_clu * SECTOR - 1) / (sec_per_clu * SECTOR) *
+                            (sec_per_clu * SECTOR) > limit)
     return -1;
 
   {
-    uint32 left = fsize;
+    uint32 left = fsize, clusz = sec_per_clu * SECTOR;
+
+    // a run of adjacent clusters is one read
     while (left > 0 && clu < EOC && clu >= 2) {
-      uint32 n = sec_per_clu;
-      if (disk_read_far(clu_lba(clu), n, linear) < 0)
+      uint32 first = clu, run = 0, bytes;
+
+      do {
+        run++;
+        clu = fat_next(clu);
+      } while (clu == first + run && run * clusz < left);
+      if (disk_read_far(clu_lba(first), run * sec_per_clu, linear) < 0)
         return -1;
-      linear += n * SECTOR;
-      left = left > n * SECTOR ? left - n * SECTOR : 0;
-      clu = fat_next(clu);
+      bytes = run * clusz;
+      linear += bytes;
+      left = left > bytes ? left - bytes : 0;
     }
     if (left > 0)
       return -1;

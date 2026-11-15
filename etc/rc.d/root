@@ -1,0 +1,4 @@
+desc=remount / read-write
+stage=boot
+requires=fsck
+step=/usr/bin/mount -u /

@@ -20,6 +20,10 @@ entry:
 entry_high_address:
   jmp kmain
 
-.comm stack, KSTACKSIZE
+# an AP, from the start code: %rcx its tables, %rsp its stack
+.globl mpentry
+mpentry:
+  movq %rcx,%cr3
+  call mp_startup
 
-.section .note.GNU-stack,"",@progbits
+.comm stack, KSTACKSIZE

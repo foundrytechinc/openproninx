@@ -1,228 +1,497 @@
-#include "user.h"
+/*	$OpenBSD: printf.c,v 1.28 2024/08/26 03:49:06 deraadt Exp $	*/
 
-#define PRINTF_BUF_SIZE 512
+/*
+ * Copyright (c) 1989 The Regents of the University of California.
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ * 3. Neither the name of the University nor the names of its contributors
+ *    may be used to endorse or promote products derived from this software
+ *    without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
 
-struct print_buf {
-  int fd;
-  int pos;
-  int print_cnt;
-  char buf[PRINTF_BUF_SIZE];
-};
+#include <ctype.h>
+#include <err.h>
+#include <errno.h>
+#include <limits.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
 
-static void pbuf_flush(struct print_buf *pb) {
-  if (pb->pos > 0) {
-    write(pb->fd, pb->buf, pb->pos);
-    pb->pos = 0;
-  }
+static int	 print_escape_str(const char *);
+static int	 print_escape(const char *);
+
+static int	 getchr(void);
+static double	 getdouble(void);
+static int	 getint(void);
+static long	 getlong(void);
+static unsigned long getulong(void);
+static char	*getstr(void);
+static char	*mklong(const char *, int); 
+static void      check_conversion(const char *, const char *);
+static void __dead usage(void);
+     
+static int	rval;
+static char  **gargv;
+
+#define isodigit(c)	((c) >= '0' && (c) <= '7')
+#define octtobin(c)	((c) - '0')
+#define hextobin(c)	((c) >= 'A' && (c) <= 'F' ? c - 'A' + 10 : (c) >= 'a' && (c) <= 'f' ? c - 'a' + 10 : c - '0')
+
+#define PF(f, func) { \
+	if (havefieldwidth) \
+		if (haveprecision) \
+			(void)printf(f, fieldwidth, precision, func); \
+		else \
+			(void)printf(f, fieldwidth, func); \
+	else if (haveprecision) \
+		(void)printf(f, precision, func); \
+	else \
+		(void)printf(f, func); \
 }
 
-static inline void printchar(struct print_buf *pb, char c) {
-  pb->buf[pb->pos++] = c;
-  pb->print_cnt++;
-  if (pb->pos >= PRINTF_BUF_SIZE) {
-    pbuf_flush(pb);
-  }
+int
+main(int argc, char *argv[])
+{
+	char *fmt, *start;
+	int havefieldwidth, haveprecision;
+	int fieldwidth, precision;
+	char convch, nextch;
+	char *format;
+
+	if (pledge("stdio", NULL) == -1)
+		err(1, "pledge");
+
+	/* Need to accept/ignore "--" option. */
+	if (argc > 1 && strcmp(argv[1], "--") == 0) {
+		argc--;
+		argv++;
+	}
+
+	if (argc < 2)
+		usage();
+
+	format = *++argv;
+	gargv = ++argv;
+
+#define SKIP1	"#-+ 0"
+#define SKIP2	"0123456789"
+	do {
+		/*
+		 * Basic algorithm is to scan the format string for conversion
+		 * specifications -- once one is found, find out if the field
+		 * width or precision is a '*'; if it is, gather up value. 
+		 * Note, format strings are reused as necessary to use up the
+		 * provided arguments, arguments of zero/null string are 
+		 * provided to use up the format string.
+		 */
+
+		/* find next format specification */
+		for (fmt = format; *fmt; fmt++) {
+			switch (*fmt) {
+			case '%':
+				start = fmt++;
+
+				if (*fmt == '%') {
+					putchar('%');
+					break;
+				} else if (*fmt == 'b') {
+					char *p = getstr();
+					if (print_escape_str(p)) {
+						return (rval);
+					}
+					break;
+				}
+
+				/* skip to field width */
+				for (; strchr(SKIP1, *fmt); ++fmt)
+					;
+				if (*fmt == '*') {
+					++fmt;
+					havefieldwidth = 1;
+					fieldwidth = getint();
+				} else
+					havefieldwidth = 0;
+
+				/* skip to field precision */
+				for (; strchr(SKIP2, *fmt); ++fmt)
+					;
+				haveprecision = 0;
+				if (*fmt == '.') {
+					++fmt;
+					if (*fmt == '*') {
+						++fmt;
+						haveprecision = 1;
+						precision = getint();
+					}
+					for (; strchr(SKIP2, *fmt); ++fmt)
+						;
+				}
+
+				if (!*fmt) {
+					warnx("missing format character");
+					return(1);
+				}
+
+				convch = *fmt;
+				nextch = *(fmt + 1);
+				*(fmt + 1) = '\0';
+				switch(convch) {
+				case 'c': {
+					char p = getchr();
+					PF(start, p);
+					break;
+				}
+				case 's': {
+					char *p = getstr();
+					PF(start, p);
+					break;
+				}
+				case 'd':
+				case 'i': {
+					long p;
+					char *f = mklong(start, convch);
+					if (!f) {
+						warnx("out of memory");
+						return (1);
+					}
+					p = getlong();
+					PF(f, p);
+					break;
+				}
+				case 'o':
+				case 'u':
+				case 'x':
+				case 'X': {
+					unsigned long p;
+					char *f = mklong(start, convch);
+					if (!f) {
+						warnx("out of memory");
+						return (1);
+					}
+					p = getulong();
+					PF(f, p);
+					break;
+				}
+				case 'a':
+				case 'A':
+				case 'e':
+				case 'E':
+				case 'f':
+				case 'F':
+				case 'g':
+				case 'G': {
+					double p = getdouble();
+					PF(start, p);
+					break;
+				}
+				default:
+					warnx("%s: invalid directive", start);
+					return(1);
+				}
+				*(fmt + 1) = nextch;
+				break;
+
+			case '\\':
+				fmt += print_escape(fmt);
+				break;
+
+			default:
+				putchar(*fmt);
+				break;
+			}
+		}
+	} while (gargv > argv && *gargv);
+
+	return (rval);
 }
 
-static void printint(struct print_buf *pb, long long xx, int base, int sign) {
-  static char digits[] = "0123456789abcdef";
-  char buf[32];
-  int i, neg;
-  unsigned long long x;
 
-  neg = 0;
-  if (sign && xx < 0) {
-    neg = 1;
-    x = (unsigned long long)-xx;
-  } else {
-    x = (unsigned long long)xx;
-  }
+/*
+ * Print SysV echo(1) style escape string 
+ *	Halts processing string and returns 1 if a \c escape is encountered.
+ */
+static int
+print_escape_str(const char *str)
+{
+	int value;
+	int c;
 
-  i = 0;
-  do {
-    buf[i++] = digits[x % base];
-  } while ((x /= base) != 0);
-  if (neg)
-    buf[i++] = '-';
+	while (*str) {
+		if (*str == '\\') {
+			str++;
+			/* 
+			 * %b string octal constants are not like those in C.
+			 * They start with a \0, and are followed by 0, 1, 2, 
+			 * or 3 octal digits. 
+			 */
+			if (*str == '0') {
+				str++;
+				for (c = 3, value = 0; c-- && isodigit(*str); str++) {
+					value <<= 3;
+					value += octtobin(*str);
+				}
+				putchar(value);
+				str--;
+			} else if (*str == 'c') {
+				return 1;
+			} else {
+				str--;			
+				str += print_escape(str);
+			}
+		} else {
+			putchar(*str);
+		}
+		str++;
+	}
 
-  while (--i >= 0) {
-    printchar(pb, buf[i]);
-  }
+	return 0;
 }
 
-/* Print string s with field width |width|.
- * left_justify=1: pad on the right; 0: pad on the left. */
-static void printstr_width(struct print_buf *pb, const char *s,
-                           int width, int left_justify) {
-  int len = 0;
-  const char *p;
-  if (!s) s = "(null)";
-  p = s;
-  while (*p++) len++;
+/*
+ * Print "standard" escape characters 
+ */
+static int
+print_escape(const char *str)
+{
+	const char *start = str;
+	int value = 0;
+	int c;
 
-  if (!left_justify) {
-    int pad = width - len;
-    while (pad-- > 0) printchar(pb, ' ');
-  }
-  while (*s) printchar(pb, *s++);
-  if (left_justify) {
-    int pad = width - len;
-    while (pad-- > 0) printchar(pb, ' ');
-  }
+	str++;
+
+	switch (*str) {
+	case '0': case '1': case '2': case '3':
+	case '4': case '5': case '6': case '7':
+		for (c = 3; c-- && isodigit(*str); str++) {
+			value <<= 3;
+			value += octtobin(*str);
+		}
+		putchar(value);
+		return str - start - 1;
+		/* NOTREACHED */
+
+	case 'x':
+		str++;
+		for (c = 2; c-- && isxdigit((unsigned char)*str); str++) {
+			value <<= 4;
+			value += hextobin(*str);
+		}
+		putchar(value);
+		return str - start - 1;
+		/* NOTREACHED */
+
+	case '\\':			/* backslash */
+		putchar('\\');
+		break;
+
+	case '\'':			/* single quote */
+		putchar('\'');
+		break;
+
+	case '"':			/* double quote */
+		putchar('"');
+		break;
+
+	case 'a':			/* alert */
+		putchar('\a');
+		break;
+
+	case 'b':			/* backspace */
+		putchar('\b');
+		break;
+
+	case 'e':			/* escape */
+#ifdef __GNUC__
+		putchar('\e');
+#else
+		putchar(033);
+#endif
+		break;
+
+	case 'f':			/* form-feed */
+		putchar('\f');
+		break;
+
+	case 'n':			/* newline */
+		putchar('\n');
+		break;
+
+	case 'r':			/* carriage-return */
+		putchar('\r');
+		break;
+
+	case 't':			/* tab */
+		putchar('\t');
+		break;
+
+	case 'v':			/* vertical-tab */
+		putchar('\v');
+		break;
+
+	case '\0':
+		warnx("null escape sequence");
+		rval = 1;
+		return 0;
+
+	default:
+		putchar(*str);
+		warnx("unknown escape sequence `\\%c'", *str);
+		rval = 1;
+	}
+
+	return 1;
 }
 
-/* Print integer with field width, right/left-aligned. */
-static void printint_width(struct print_buf *pb, long long v, int base,
-                           int sign, int width, int left_justify,
-                           char pad_char) {
-  char buf[32];
-  int i = 0, neg = 0;
-  unsigned long long x;
+static char *
+mklong(const char *str, int ch)
+{
+	static char *copy;
+	static int copysize;
+	int len;	
 
-  if (sign && v < 0) { neg = 1; x = (unsigned long long)-v; }
-  else                x = (unsigned long long)v;
+	len = strlen(str) + 2;
+	if (copysize < len) {
+		char *newcopy;
+		copysize = len + 256;
 
-  do { buf[i++] = "0123456789abcdef"[x % base]; } while ((x /= base) != 0);
-  if (neg) buf[i++] = '-';
-
-  int len = i;
-  if (!left_justify) {
-    int pad = width - len;
-    while (pad-- > 0) printchar(pb, pad_char);
-  }
-  while (--i >= 0) printchar(pb, buf[i]);
-  if (left_justify) {
-    int pad = width - len;
-    while (pad-- > 0) printchar(pb, ' ');
-  }
+		newcopy = realloc(copy, copysize);
+		if (newcopy == NULL) {
+			copysize = 0;
+			free(copy);
+			copy = NULL;
+			return (NULL);
+		}
+		copy = newcopy;
+	}
+	(void) memmove(copy, str, len - 3);
+	copy[len - 3] = 'l';
+	copy[len - 2] = ch;
+	copy[len - 1] = '\0';
+	return (copy);	
 }
 
-static int do_printf(const char *fmt, int fd, va_list va) {
-  struct print_buf pb;
-  int c, i;
-
-  pb.fd = fd;
-  pb.pos = 0;
-  pb.print_cnt = 0;
-
-  for (i = 0; (c = fmt[i] & 0xff) != 0; i++) {
-    if (c != '%') {
-      printchar(&pb, c);
-      continue;
-    }
-
-    /* Start of format spec */
-    i++;
-    c = fmt[i] & 0xff;
-    if (c == 0) break;
-
-    /* Flags */
-    int left_justify = 0;
-    while (c == '-') {
-      left_justify = 1;
-      i++;
-      c = fmt[i] & 0xff;
-    }
-
-    /* Width: either '*' (from arg) or digits */
-    int width = 0;
-    if (c == '*') {
-      width = va_arg(va, int);
-      if (width < 0) {
-        left_justify = 1;
-        width = -width;
-      }
-      i++;
-      c = fmt[i] & 0xff;
-    } else {
-      while (c >= '0' && c <= '9') {
-        width = width * 10 + (c - '0');
-        i++;
-        c = fmt[i] & 0xff;
-      }
-    }
-
-    char pad_char = ' ';
-
-    /* Length modifier */
-    int is_long = 0;
-    if (c == 'l') {
-      is_long = 1;
-      i++;
-      c = fmt[i] & 0xff;
-      if (c == 'l') {
-        i++;
-        c = fmt[i] & 0xff;
-      } /* ll */
-    }
-
-    /* Conversion */
-    if (c == 'd' || c == 'i') {
-      long long val = is_long ? va_arg(va, long long) : (long long)va_arg(va, int);
-      if (width > 0)
-        printint_width(&pb, val, 10, 1, width, left_justify, pad_char);
-      else
-        printint(&pb, val, 10, 1);
-    } else if (c == 'u') {
-      unsigned long long val = is_long ? (unsigned long long)va_arg(va, unsigned long long)
-                                       : (unsigned long long)va_arg(va, unsigned int);
-      if (width > 0)
-        printint_width(&pb, (long long)val, 10, 0, width, left_justify, pad_char);
-      else
-        printint(&pb, (long long)val, 10, 0);
-    } else if (c == 'x' || c == 'p') {
-      unsigned long long val = is_long ? (unsigned long long)va_arg(va, unsigned long long)
-                                       : (unsigned long long)(unsigned int)va_arg(va, int);
-      if (width > 0)
-        printint_width(&pb, (long long)val, 16, 0, width, left_justify, pad_char);
-      else
-        printint(&pb, (long long)val, 16, 0);
-    } else if (c == 's') {
-      char *s = va_arg(va, char *);
-      if (!s) s = "(null)";
-      if (width > 0)
-        printstr_width(&pb, s, width, left_justify);
-      else
-        while (*s) printchar(&pb, *s++);
-    } else if (c == 'c') {
-      char ch = (char)va_arg(va, int);
-      printchar(&pb, ch);
-    } else if (c == '%') {
-      printchar(&pb, '%');
-    } else if (c == 0) {
-      break;
-    } else {
-      /* Unknown specifier — print literally */
-      printchar(&pb, '%');
-      if (left_justify) printchar(&pb, '-');
-      printchar(&pb, c);
-    }
-  }
-
-  pbuf_flush(&pb);
-  return pb.print_cnt;
+static int
+getchr(void)
+{
+	if (!*gargv)
+		return((int)'\0');
+	return((int)**gargv++);
 }
 
-// Print to stdout. Supports: %c %d %i %u %x %p %s %lld %lu %*s %-Ns %Nd etc.
-int printf(const char *fmt, ...) {
-  va_list va;
-  va_start(va, fmt);
-  int res = do_printf(fmt, 1, va);
-  va_end(va);
-  return res;
+static char *
+getstr(void)
+{
+	if (!*gargv)
+		return("");
+	return(*gargv++);
 }
 
-// Print to the given fd.
-int dprintf(int fd, const char *fmt, ...) {
-  va_list va;
-  va_start(va, fmt);
-  int res = do_printf(fmt, fd, va);
-  va_end(va);
-  return res;
+static char *number = "+-.0123456789";
+static int
+getint(void)
+{
+	if (!*gargv)
+		return(0);
+
+	if (strchr(number, **gargv))
+		return(atoi(*gargv++));
+
+	return 0;
 }
 
-int putchar(int c) {
-  char ch = (char)c;
-  write(1, &ch, 1);
-  return (uchar)ch;
+static long
+getlong(void)
+{
+	long val;
+	char *ep;
+
+	if (!*gargv)
+		return(0L);
+
+	if (**gargv == '\"' || **gargv == '\'')
+		return (unsigned char) *((*gargv++)+1);
+
+	errno = 0;
+	val = strtol(*gargv, &ep, 0);
+	check_conversion(*gargv++, ep);
+	return val;
+}
+
+static unsigned long
+getulong(void)
+{
+	unsigned long val;
+	char *ep;
+
+	if (!*gargv)
+		return(0UL);
+
+	if (**gargv == '\"' || **gargv == '\'')
+		return (unsigned char) *((*gargv++)+1);
+
+	errno = 0;
+	val = strtoul(*gargv, &ep, 0);
+	check_conversion(*gargv++, ep);
+	return val;
+}
+
+static double
+getdouble(void)
+{
+	double val;
+	char *ep;
+
+	if (!*gargv)
+		return(0.0);
+
+	if (**gargv == '\"' || **gargv == '\'')
+		return (unsigned char) *((*gargv++)+1);
+
+	errno = 0;
+	val = strtod(*gargv, &ep);
+	check_conversion(*gargv++, ep);
+	return val;
+}
+
+static void
+check_conversion(const char *s, const char *ep)
+{
+	if (*ep) {
+		if (ep == s)
+			warnx("%s: expected numeric value", s);
+		else
+			warnx("%s: not completely converted", s);
+		rval = 1;
+	} else if (errno == ERANGE) {
+		warnc(ERANGE, "%s", s);
+		rval = 1;
+	}
+}
+
+static void __dead
+usage(void)
+{
+	(void)fprintf(stderr, "usage: printf format [argument ...]\n");
+	exit(1);
 }

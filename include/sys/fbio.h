@@ -1,0 +1,12 @@
+#ifndef _SYS_FBIO_H_
+#define _SYS_FBIO_H_
+
+#include <sys/ioctl.h>
+
+#define FBIOGTYPE FNU_FBTYPE
+#define FBIO_MODEINFO FNU_FBMODEINFO
+#define FBIO_FINDMODE FNU_FBFINDMODE
+#define FBIO_GETMODE FNU_FBGETMODE
+#define FBIO_SETMODE FNU_FBSETMODE
+
+#endif

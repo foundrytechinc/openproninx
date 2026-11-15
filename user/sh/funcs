@@ -1,0 +1,10 @@
+tree FETCH_HEAD:bin/sh/funcs
+
+cmv
+dirs
+kill
+login
+newgrp
+popd
+pushd
+suspend

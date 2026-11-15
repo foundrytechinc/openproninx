@@ -67,6 +67,9 @@ This licensing policy is intentional and applies to the project as a whole.
 * [`doc/VIDEO.md`](doc/VIDEO.md): VBE framebuffer configuration and graphics subsystem.
 * [`doc/UFS2_WRITE.md`](doc/UFS2_WRITE.md): UFS2 write support.
 * [`doc/THIRD_PARTY_NOTICES.md`](doc/THIRD_PARTY_NOTICES.md): Third-party software and license notices.
+* [`doc/ACPI.md`](doc/ACPI.md): ACPI, sleep, hibernation and the TPM.
+* [`doc/INIT.md`](doc/INIT.md): init, the service supervisor and boot steps.
+* [`SECURITY.md`](SECURITY.md): what the development image does and does not protect.
 
 ---
 
@@ -89,8 +92,23 @@ bmake qemu
 ### Requirements
 
 * `bmake`
-* `clang`
+* `clang`, `lld` and the LLVM binutils
+* `makefs` from FreeBSD or NetBSD (it builds on Linux)
 * QEMU (for `bmake qemu`)
+
+### Accounts
+
+The image has `root` with the password `root`. The first boot adds `admin`
+with the password `admin`, in `wheel`, so `doas` works. Change both with
+`passwd` on any machine that is not a throwaway.
+
+### Writing a USB stick
+
+```sh
+dd if=obj/PRONINX.img of=/dev/sdX bs=4M conv=fsync
+```
+
+The same image boots from a BIOS and from UEFI.
 
 ---
 

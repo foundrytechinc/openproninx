@@ -1,0 +1,13 @@
+# filesystem table, see doc/STORAGE.md
+#
+#   from=  device under /dev, several separated by ;
+#   on=    mount point
+#   type=  ufs2, fat32 or auto
+#   mode=  ro or rw, nosuid
+#   at=    boot, plug or manual
+#
+# stable names: /dev/part-by-uuid/, /dev/part-by-label/, /dev/fs-by-uuid/,
+# /dev/fs-by-label/, /dev/serno/SERIAL[pN]
+#
+# from=/dev/fs-by-label/DATA                  on=/data type=auto  mode=ro at=boot
+# from=/dev/part-by-label/stick               on=/mnt  type=fat32 mode=rw at=plug

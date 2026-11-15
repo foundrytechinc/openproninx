@@ -273,4 +273,27 @@ flat_write:
 	popl	%ebp
 	ret
 
-	.section .note.GNU-stack,"",@progbits
+// flat_rd32(uint32 linear), flat_wr32(uint32 linear, uint32 v): one 32-bit
+// access, as a device register wants
+	.globl	flat_rd32
+flat_rd32:
+	.code32
+	pushl	%ds
+	movl	8(%esp), %edx
+	movw	$flatdataseg, %ax
+	movw	%ax, %ds
+	movl	(%edx), %eax
+	popl	%ds
+	ret
+
+	.globl	flat_wr32
+flat_wr32:
+	.code32
+	pushl	%ds
+	movl	8(%esp), %edx
+	movl	12(%esp), %ecx
+	movw	$flatdataseg, %ax
+	movw	%ax, %ds
+	movl	%ecx, (%edx)
+	popl	%ds
+	ret

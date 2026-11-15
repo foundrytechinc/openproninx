@@ -1,39 +1,262 @@
 #include "defs.h"
+#include "hibernate.h"
 #include "inc/bootinfo.h"
 #include "memlayout.h"
 #include "mmu.h"
-#include "spinlock.h"
+#include "mutex.h"
+#include "x86.h"
 
 #define SIZE_2M 0x200000ULL
 
-void freerange(void *vstart, void *vend);
-static void vmem_reserve(void);
-extern char end[]; // first address after kernel loaded from ELF file
-                   // defined by the kernel linker script in kernel.ld
+void page_free_range(void *vstart, void *vend);
+static void contig_reserve(void);
+static void bufmem_reserve(void);
+extern char end[];
 
 struct run {
   struct run *next;
 };
 
 struct {
-  struct spinlock lock;
+  struct mutex lock;
   int use_lock;
   struct run *freelist;
+  struct run *lowlist;
+  int nfree;
 } kmem;
 
-static uintptr_t phys_temporary_top = 4 * 1024 * 1024;
+int kalloc_nfree(void) { return kmem.nfree; }
+
+static uintptr_t phys_temporary_top;
 uintptr_t phys_top;
 uintptr_t phys_map_top;
 static uint64_t ram_bytes;
 
-// phys_top: handed out. phys_map_top: still mapped.
+#define NCARVE (16 + FNU_MODULE_MAX + FNU_PCIROM_MAX)
+static struct {
+  uint64_t base;
+  uint64_t end;
+  int boot; // the loader's page tables: given back after hat_kern_setup
+} carved[NCARVE];
+static int ncarved;
+
+static uint64_t carve_ram_below(uint64_t bytes, uint64_t align, uint64_t limit) {
+  const struct fnu_bootinfo *bi = bootinfo();
+  uint64_t best = 0;
+  uint i;
+  int k;
+
+  if (bi == 0 || bytes == 0 || ncarved >= NCARVE)
+    return 0;
+  bytes = (bytes + align - 1) & ~(align - 1);
+  for (i = 0; i < bi->memranges; i++) {
+    uint64_t lo = bi->mem[i].base, hi = lo + bi->mem[i].length, at;
+
+    if (bi->mem[i].type != FNU_MEM_RAM)
+      continue;
+    if (hi > phys_top)
+      hi = phys_top;
+    if (hi > limit)
+      hi = limit;
+    hi &= ~(align - 1);
+    lo = (lo + align - 1) & ~(align - 1);
+    while (hi > lo && hi - lo >= bytes) {
+      at = hi - bytes;
+      for (k = 0; k < ncarved; k++)
+        if (carved[k].base < at + bytes && carved[k].end > at)
+          break;
+      if (k < ncarved) {
+        hi = carved[k].base & ~(align - 1);
+        continue;
+      }
+      if (at >= phys_temporary_top && at > best)
+        best = at;
+      break;
+    }
+  }
+  if (best == 0)
+    return 0;
+  carved[ncarved].base = best;
+  carved[ncarved].end = best + bytes;
+  ncarved++;
+  return best;
+}
+
+static uint64_t carve_ram(uint64_t bytes, uint64_t align) {
+  return carve_ram_below(bytes, align, phys_top);
+}
+
+#define DMA_SLOT (64 * 1024)
+#define DMA_SLOTS 64
+static struct {
+  struct mutex lock;
+  uint64_t base;
+  uint8_t run[DMA_SLOTS];
+} dma;
+
+void *dma_alloc(uint64_t bytes) {
+  int n = (int)((bytes + DMA_SLOT - 1) / DMA_SLOT), i, j;
+
+  if (dma.base == 0 || n == 0 || n > DMA_SLOTS)
+    return 0;
+  mtx_enter(&dma.lock);
+  for (i = 0; i + n <= DMA_SLOTS; i++) {
+    for (j = 0; j < n && dma.run[i + j] == 0; j++)
+      ;
+    if (j < n) {
+      i += j;
+      continue;
+    }
+    dma.run[i] = (uint8_t)n;
+    for (j = 1; j < n; j++)
+      dma.run[i + j] = 0xff;
+    mtx_leave(&dma.lock);
+    return P2V(dma.base + (uint64_t)i * DMA_SLOT);
+  }
+  mtx_leave(&dma.lock);
+  return 0;
+}
+
+void dma_free(void *p) {
+  uint64_t off = (uint64_t)V2P(p) - dma.base;
+  int i = (int)(off / DMA_SLOT), n, j;
+
+  if (p == 0 || off >= (uint64_t)DMA_SLOTS * DMA_SLOT || dma.run[i] == 0 || dma.run[i] == 0xff)
+    return;
+  mtx_enter(&dma.lock);
+  n = dma.run[i];
+  for (j = 0; j < n; j++)
+    dma.run[i + j] = 0;
+  mtx_leave(&dma.lock);
+}
+
+static uint64_t msgbuf_phys;
+
+static void carve_msgbuf(void) {
+  const struct fnu_bootinfo *bi = bootinfo();
+  uint64_t bytes = PGROUNDUP(msgbuf_bytes()), at = phys_top - bytes;
+  uint i;
+
+  if (phys_top < bytes || ncarved >= NCARVE)
+    return;
+  for (i = 0; i < bi->memranges; i++)
+    if (bi->mem[i].type == FNU_MEM_RAM && bi->mem[i].base <= at &&
+        bi->mem[i].base + bi->mem[i].length >= phys_top) {
+      carved[ncarved].base = at;
+      carved[ncarved].end = phys_top;
+      ncarved++;
+      msgbuf_phys = at;
+      return;
+    }
+}
+
+uint64_t msgbuf_reserved(void) { return msgbuf_phys; }
+
+static uint64_t piglet_phys;
+
+static void carve_piglet(void) {
+  if (ram_bytes >= HIB_MIN_MEMORY)
+    piglet_phys = carve_ram_below(HIB_PIGLET, HIB_CHUNK, 0x100000000ULL);
+}
+
+uint64_t hibernate_piglet(void) { return piglet_phys; }
+
+static void carve_modules(void) {
+  const struct fnu_bootinfo *bi = bootinfo();
+  uint i;
+
+  for (i = 0; bi != 0 && i < bi->modules && ncarved < NCARVE; i++) {
+    carved[ncarved].base = PGROUNDDOWN(bi->module[i].base);
+    carved[ncarved].end = PGROUNDUP(bi->module[i].base + bi->module[i].size);
+    ncarved++;
+  }
+  for (i = 0; bi != 0 && i < bi->pciroms && ncarved < NCARVE; i++) {
+    carved[ncarved].base = PGROUNDDOWN(bi->pcirom[i].base);
+    carved[ncarved].end = PGROUNDUP(bi->pcirom[i].base + bi->pcirom[i].size);
+    ncarved++;
+  }
+}
+
+// THE LOADER'S PAGE TABLES
+// still under cr3 while page_init frees what lies past the kernel
+static void carve_table(uint64_t pa, uint64_t lo, uint64_t hi) {
+  int k;
+
+  if (pa < lo || pa >= hi)
+    return;
+  for (k = 0; k < ncarved; k++)
+    if (carved[k].boot && pa >= carved[k].base && pa < carved[k].end)
+      return;
+  if (ncarved > 0 && carved[ncarved - 1].boot && carved[ncarved - 1].end == pa) {
+    carved[ncarved - 1].end += PGSIZE;
+    return;
+  }
+  if (ncarved >= NCARVE)
+    panic("page_init: the loader's page tables are all over memory");
+  carved[ncarved].base = pa;
+  carved[ncarved].end = pa + PGSIZE;
+  carved[ncarved].boot = 1;
+  ncarved++;
+}
+
+static void carve_boot_tables(uint64_t lo, uint64_t hi) {
+  uint64_t l4 = PTE_ADDR(rcr3()), l3, l2, *p4, *p3, *p2;
+  int i, j, k;
+
+  carve_table(l4, lo, hi);
+  p4 = (uint64_t *)P2V(l4);
+  for (i = 0; i < 512; i++) {
+    if (!(p4[i] & PTE_P))
+      continue;
+    carve_table(l3 = PTE_ADDR(p4[i]), lo, hi);
+    p3 = (uint64_t *)P2V(l3);
+    for (j = 0; j < 512; j++) {
+      if (!(p3[j] & PTE_P) || (p3[j] & PTE_PS))
+        continue;
+      carve_table(l2 = PTE_ADDR(p3[j]), lo, hi);
+      p2 = (uint64_t *)P2V(l2);
+      for (k = 0; k < 512; k++)
+        if ((p2[k] & PTE_P) && !(p2[k] & PTE_PS))
+          carve_table(PTE_ADDR(p2[k]), lo, hi);
+    }
+  }
+}
+
+// after hat_kern_setup nothing walks them
+void page_boot_tables_free(void) {
+  int k;
+
+  for (k = 0; k < ncarved; k++)
+    if (carved[k].boot) {
+      page_free_range((void *)P2V(carved[k].base), (void *)P2V(carved[k].end));
+      carved[k].base = carved[k].end = 0;
+      carved[k].boot = 0;
+    }
+}
+
+static void free_uncarved(uint64_t lo, uint64_t hi) {
+  int k;
+
+  for (k = 0; k < ncarved; k++) {
+    if (carved[k].end <= lo || carved[k].base >= hi)
+      continue;
+    if (carved[k].base > lo)
+      free_uncarved(lo, carved[k].base);
+    if (carved[k].end < hi)
+      free_uncarved(carved[k].end, hi);
+    return;
+  }
+  if (lo < hi)
+    page_free_range((void *)P2V(lo), (void *)P2V(hi));
+}
+
 static void detect_memory(void) {
   const struct fnu_bootinfo *bi = bootinfo();
   uint64_t top = 0, maptop = 0, hi;
   uint i;
 
   if (bi == 0)
-    panic("kinit1: no boot information");
+    panic("page_init: no boot information");
 
   for (i = 0; i < bi->memranges; i++) {
     if (bi->mem[i].type != FNU_MEM_RAM)
@@ -44,9 +267,8 @@ static void detect_memory(void) {
       top = hi;
   }
   if (top == 0)
-    panic("kinit1: no usable memory");
+    panic("page_init: no usable memory");
 
-  // firmware next to ram stays mapped, a far mmio hole does not
   maptop = top;
   for (i = 0; i < bi->memranges; i++) {
     hi = bi->mem[i].base + bi->mem[i].length;
@@ -56,12 +278,9 @@ static void detect_memory(void) {
 
   phys_top = (uintptr_t)(top / PGSIZE * PGSIZE);
   phys_map_top = (uintptr_t)((maptop + SIZE_2M - 1) / SIZE_2M * SIZE_2M);
-  cprintf("MEM: %u MB ram, top 0x%x, mapping to 0x%x\n",
-          (uint)(ram_bytes / (1024 * 1024)), (uint64_t)phys_top,
-          (uint64_t)phys_map_top);
+  printf("MEM: %u MB ram\n", (uint)(ram_bytes / (1024 * 1024)));
 }
 
-// the run of ram holding p, touching ranges counted as one
 static uint64_t ram_run_end(uint64_t p) {
   const struct fnu_bootinfo *bi = bootinfo();
   uint64_t end = 0, hi;
@@ -94,118 +313,125 @@ static uint64_t ram_run_end(uint64_t p) {
 
 uint64_t get_total_ram(void) { return ram_bytes; }
 
-uint64_t get_free_ram(void) {
-  struct run *r;
-  uint64_t free_pages = 0;
-  acquire(&kmem.lock);
-  r = kmem.freelist;
-  while (r) {
-    free_pages++;
-    r = r->next;
-  }
-  release(&kmem.lock);
-  return free_pages * PGSIZE;
-}
+uint64_t get_free_ram(void) { return (uint64_t)kmem.nfree * PGSIZE; }
 
-// two phases: kinit1 hands out only what entrypgdir maps, kinit2 the rest
-// once the full page table is installed.
-void kinit1(void *vstart) {
-  initlock(&kmem.lock, "kmem");
+void page_init(void *vstart) {
+  mtx_init(&kmem.lock, "kmem");
   kmem.use_lock = 0;
   detect_memory();
-  vmem_reserve();
-  uintptr_t end_phys = PGROUNDUP((uintptr_t)V2P(vstart));
+  phys_temporary_top = PGROUNDUP((uintptr_t)V2P(vstart));
+  carve_msgbuf();
+  contig_reserve();
+  bufmem_reserve();
+  carve_modules();
+  carve_piglet();
+  mtx_init(&dma.lock, "dma");
+  dma.base = carve_ram_below((uint64_t)DMA_SLOTS * DMA_SLOT, DMA_SLOT, 0x100000000ULL);
+  uintptr_t end_phys = phys_temporary_top;
   uint64_t run = ram_run_end(end_phys);
 
   if (run == 0)
-    panic("kinit1: the loader left the kernel outside ram");
-  if (phys_temporary_top < end_phys + 4 * 1024 * 1024) {
-    phys_temporary_top = end_phys + 4 * 1024 * 1024;
-  }
-  // uefi firmware parks its own pages just above the kernel
-  if (phys_temporary_top > run) {
-    phys_temporary_top = run;
-  }
-  if (phys_temporary_top <= end_phys + PGSIZE)
-    panic("kinit1: no free memory next to the kernel");
-  freerange(vstart, (void *)P2V(phys_temporary_top));
+    panic("page_init: the loader left the kernel outside ram");
+  // until hat_kern_setup only the loader's map
+  phys_temporary_top = run < FNU_BOOT_MAPPED ? run : FNU_BOOT_MAPPED;
+  if (phys_temporary_top <= end_phys)
+    panic("page_init: the kernel ends past the loader's map");
+  carve_boot_tables(end_phys, phys_temporary_top);
+  free_uncarved(end_phys, phys_temporary_top);
+  if (kmem.nfree == 0)
+    panic("page_init: no free memory next to the kernel");
 }
 
-static char *gpu_backing_mem = 0;
-static uint64_t gpu_backing_phys = 0;
-static uintptr_t gpu_reserve_size = 0;
-
-void *gpu_alloc_backing(uint32_t size, uint64_t *phys_out) {
-  if (gpu_backing_mem && (size == 0 || size <= gpu_reserve_size)) {
-    if (phys_out)
-      *phys_out = gpu_backing_phys;
-    return gpu_backing_mem;
-  }
-  return 0;
-}
-
-// Contiguous arena for the console: pixel shadow, cell buffers, scanlines.
-// Sized from ram, never from a resolution. NetBSD hands rasops a shadow
-// the same way and does without when it will not fit.
-struct vmem_block {
-  struct vmem_block *next;
-  uint64_t size;                 // including this header
+// THE CONTIGUOUS ARENA
+struct contig_block {
+  struct contig_block *next;
+  uint64_t size;
   int used;
 };
 
-static char *vmem_base;
-static uint64_t vmem_size;
-static struct vmem_block *vmem_head;
+static char *contig_base;
+static uint64_t contig_size;
+static struct contig_block *contig_head;
 
-#define VMEM_ALIGN 4096
-#define VMEM_HDR ((uint64_t)((sizeof(struct vmem_block) + 63) & ~63ULL))
+#define CONTIG_ALIGN 4096
+#define CONTIG_HDR ((uint64_t)((sizeof(struct contig_block) + 63) & ~63ULL))
 
-static uintptr_t vmem_phys;
+static uintptr_t contig_phys;
+static struct mutex contig_lock;
+static int contig_locking;
 
-// carve the range now, write into it only after kvmalloc maps everything
-static void vmem_reserve(void) {
-  uint64_t arena = ram_bytes / 16;
+// THE BUFFER CACHE'S OWN MEMORY
+static uintptr_t bufmem_phys;
+static uint64_t bufmem_size;
+
+static void bufmem_reserve(void) {
+  uint64_t want = ram_bytes / 10, at;
+
+  if (want < 4 * 1024 * 1024)
+    want = 4 * 1024 * 1024;
+  if (want > 256 * 1024 * 1024)
+    want = 256 * 1024 * 1024;
+  want = (want + SIZE_2M - 1) / SIZE_2M * SIZE_2M;
+  if ((at = carve_ram(want, SIZE_2M)) == 0)
+    return;
+  bufmem_phys = (uintptr_t)at;
+  bufmem_size = want;
+}
+
+void bufmem_region(char **base, uint64_t *size) {
+  *base = bufmem_phys != 0 ? (char *)P2V(bufmem_phys) : 0;
+  *size = bufmem_phys != 0 ? bufmem_size : 0;
+}
+
+static void contig_reserve(void) {
+  uint64_t arena = ram_bytes / 16, at;
 
   if (arena < 8 * 1024 * 1024)
     arena = 8 * 1024 * 1024;
   if (arena > 64 * 1024 * 1024)
     arena = 64 * 1024 * 1024;
   arena = (arena + SIZE_2M - 1) / SIZE_2M * SIZE_2M;
-  if (phys_top <= (uintptr_t)phys_temporary_top + arena + 16 * 1024 * 1024)
+  if ((at = carve_ram(arena, SIZE_2M)) == 0)
     return;
-  phys_top -= arena;
-  vmem_phys = phys_top;
-  vmem_size = arena;
+  contig_phys = (uintptr_t)at;
+  contig_size = arena;
 }
 
-static void vmem_init(char *base, uint64_t size) {
-  vmem_base = base;
-  vmem_size = size;
-  vmem_head = (struct vmem_block *)base;
-  vmem_head->next = 0;
-  vmem_head->size = size;
-  vmem_head->used = 0;
+static void contig_init(char *base, uint64_t size) {
+  contig_base = base;
+  contig_size = size;
+  contig_head = (struct contig_block *)base;
+  contig_head->next = 0;
+  contig_head->size = size;
+  contig_head->used = 0;
 }
 
-void vmem_setup(void) {
-  if (vmem_phys != 0)
-    vmem_init((char *)P2V(vmem_phys), vmem_size);
+void contig_setup(void) {
+  mtx_init(&contig_lock, "contig");
+  if (contig_phys != 0)
+    contig_init((char *)P2V(contig_phys), contig_size);
 }
 
-uint64_t vmem_capacity(void) { return vmem_size; }
+uint64_t contig_capacity(void) { return contig_size; }
 
-void *vmem_alloc(uint64_t bytes) {
-  struct vmem_block *b, *split;
+int contig_owns(void *p) {
+  return contig_base != 0 && (char *)p >= contig_base && (char *)p < contig_base + contig_size;
+}
+
+void *contig_alloc(uint64_t bytes) {
+  struct contig_block *b, *split;
   uint64_t need;
 
-  if (vmem_base == 0 || bytes == 0)
+  if (contig_base == 0 || bytes == 0)
     return 0;
-  need = (VMEM_HDR + bytes + VMEM_ALIGN - 1) & ~(uint64_t)(VMEM_ALIGN - 1);
-  for (b = vmem_head; b != 0; b = b->next) {
+  need = (CONTIG_HDR + bytes + CONTIG_ALIGN - 1) & ~(uint64_t)(CONTIG_ALIGN - 1);
+  if (contig_locking)
+    mtx_enter(&contig_lock);
+  for (b = contig_head; b != 0; b = b->next) {
     if (b->used || b->size < need)
       continue;
-    if (b->size >= need + VMEM_ALIGN * 2) {
-      split = (struct vmem_block *)((char *)b + need);
+    if (b->size >= need + CONTIG_ALIGN * 2) {
+      split = (struct contig_block *)((char *)b + need);
       split->next = b->next;
       split->size = b->size - need;
       split->used = 0;
@@ -213,42 +439,49 @@ void *vmem_alloc(uint64_t bytes) {
       b->size = need;
     }
     b->used = 1;
-    return (char *)b + VMEM_HDR;
+    if (contig_locking)
+      mtx_leave(&contig_lock);
+    return (char *)b + CONTIG_HDR;
   }
+  if (contig_locking)
+    mtx_leave(&contig_lock);
   return 0;
 }
 
-void vmem_free(void *p) {
-  struct vmem_block *b, *n;
+void contig_free(void *p) {
+  struct contig_block *b, *n;
 
-  if (p == 0 || vmem_base == 0)
+  if (p == 0 || contig_base == 0)
     return;
-  b = (struct vmem_block *)((char *)p - VMEM_HDR);
+  if (contig_locking)
+    mtx_enter(&contig_lock);
+  b = (struct contig_block *)((char *)p - CONTIG_HDR);
   b->used = 0;
-  for (b = vmem_head; b != 0; b = b->next) {
+  for (b = contig_head; b != 0; b = b->next) {
     while ((n = b->next) != 0 && !b->used && !n->used) {
       b->size += n->size;
       b->next = n->next;
     }
   }
+  if (contig_locking)
+    mtx_leave(&contig_lock);
 }
 
-void kinit2(void) {
-  static const uintptr_t want[2] = {16 * 1024 * 1024, 4 * 1024 * 1024};
+void contig_lock_enable(void) { contig_locking = 1; }
+
+// HIBERNATE
+void contig_zero_free(void) {
+  struct contig_block *b;
+
+  for (b = contig_head; b != 0; b = b->next)
+    if (!b->used && b->size > CONTIG_HDR)
+      memset((char *)b + CONTIG_HDR, 0, b->size - CONTIG_HDR);
+}
+
+void page_init_rest(void) {
   const struct fnu_bootinfo *bi = bootinfo();
   uint64_t lo, hi;
   uint i;
-
-  for (i = 0; i < NELEM(want); i++) {
-    if (phys_top <= (uintptr_t)phys_temporary_top + want[i] * 2)
-      continue;
-    phys_top -= want[i];
-    gpu_reserve_size = want[i];
-    gpu_backing_phys = phys_top;
-    gpu_backing_mem = (char *)P2V(gpu_backing_phys);
-    memset(gpu_backing_mem, 0, want[i]);
-    break;
-  }
 
   for (i = 0; i < bi->memranges; i++) {
     if (bi->mem[i].type != FNU_MEM_RAM)
@@ -260,45 +493,45 @@ void kinit2(void) {
     if (hi > phys_top)
       hi = phys_top;
     if (lo < hi)
-      freerange((void *)P2V(lo), (void *)P2V(hi));
+      free_uncarved(lo, hi);
   }
   kmem.use_lock = 1;
-  cprintf("KMEM: %u MB free, first page phys 0x%x, phys_top 0x%x\n",
-          (uint)(get_free_ram() / (1024 * 1024)),
-          (uint64_t)(kmem.freelist ? V2P(kmem.freelist) : 0),
-          (uint64_t)phys_top);
+  printf("KMEM: %u MB free\n", (uint)(get_free_ram() / (1024 * 1024)));
 }
 
-void freerange(void *vstart, void *vend) {
+void page_free_range(void *vstart, void *vend) {
   char *p;
   p = (char *)PGROUNDUP((uintptr_t)vstart);
   for (; p + PGSIZE <= (char *)vend; p += PGSIZE) {
-    kfree(p);
+    page_free(p);
   }
 }
 
-// free one page. also used to seed the allocator at boot.
-void kfree(char *v) {
+void page_free(char *v) {
   struct run *r;
 
   if ((uintptr_t)v % PGSIZE || V2P(v) < V2P(end) || V2P(v) >= phys_top) {
-    cprintf("kfree: failed for 0x%p\n", v);
-    panic("kfree");
+    printf("page_free: failed for %p\n", v);
+    panic("page_free");
   }
 
   if (kmem.use_lock) {
-    acquire(&kmem.lock);
+    mtx_enter(&kmem.lock);
   }
   r = (struct run *)v;
-  r->next = kmem.freelist;
-  kmem.freelist = r;
+  if (V2P(v) < 0x100000000ULL) {
+    r->next = kmem.lowlist;
+    kmem.lowlist = r;
+  } else {
+    r->next = kmem.freelist;
+    kmem.freelist = r;
+  }
+  kmem.nfree++;
   if (kmem.use_lock) {
-    release(&kmem.lock);
+    mtx_leave(&kmem.lock);
   }
 }
 
-// one 4096-byte page of physical memory, or 0. a free page holds the next
-// link in its first bytes.
 static int freelist_sane(struct run *r) {
   uintptr_t va = (uintptr_t)r;
 
@@ -307,20 +540,141 @@ static int freelist_sane(struct run *r) {
   return V2P(r) >= V2P(end) && V2P(r) < phys_top;
 }
 
-char *kalloc(void) {
-  struct run *r;
+static char *take(struct run **list) {
+  struct run *r = *list;
 
-  if (kmem.use_lock)
-    acquire(&kmem.lock);
-  r = kmem.freelist;
   if (r) {
     if (r->next != 0 && !freelist_sane(r->next)) {
-      cprintf("kalloc: free list damaged at 0x%p, link 0x%p\n", r, r->next);
-      panic("kalloc");
+      printf("page_alloc: free list damaged at %p, link %p\n", r, r->next);
+      panic("page_alloc");
     }
-    kmem.freelist = r->next;
+    *list = r->next;
+    kmem.nfree--;
+  }
+  return (char *)r;
+}
+
+// last pages: page daemon. few above: kernel. processes get none
+int page_reserve_daemon = 4, page_reserve_kernel = 8;
+struct proc *page_daemon;
+
+// reserves hold once the daemon runs; before that the boot eats everything
+static char *page_take(int user) {
+  int guard = page_daemon != 0 && curproc != page_daemon;
+  char *p;
+
+  if (kmem.use_lock)
+    mtx_enter(&kmem.lock);
+  if (guard &&
+      kmem.nfree <= (user ? page_reserve_kernel : page_reserve_daemon)) {
+    if (kmem.use_lock)
+      mtx_leave(&kmem.lock);
+    return 0;
+  }
+  p = take(&kmem.freelist);
+  if (p == 0)
+    p = take(&kmem.lowlist);
+  if (kmem.use_lock)
+    mtx_leave(&kmem.lock);
+  return p;
+}
+
+char *page_alloc(void) { return page_take(0); }
+
+char *page_alloc_user(void) { return page_take(1); }
+
+// HIBERNATE
+static void map_list(struct run *r, uint8_t *map, uint64_t pages) {
+  for (; r != 0; r = r->next) {
+    uint64_t pg = V2P(r) / PGSIZE;
+
+    if (pg < pages)
+      map[pg / 8] |= (uint8_t)(1 << (pg % 8));
+  }
+}
+
+void kalloc_freemap(uint8_t *map, uint64_t pages) {
+  memset(map, 0, (pages + 7) / 8);
+  if (kmem.use_lock)
+    mtx_enter(&kmem.lock);
+  map_list(kmem.freelist, map, pages);
+  map_list(kmem.lowlist, map, pages);
+  if (kmem.use_lock)
+    mtx_leave(&kmem.lock);
+}
+
+void kalloc_rebuild(const uint8_t *map, uint64_t pages) {
+  uint64_t pg;
+
+  if (kmem.use_lock)
+    mtx_enter(&kmem.lock);
+  kmem.freelist = kmem.lowlist = 0;
+  kmem.nfree = 0;
+  for (pg = pages; pg-- > 0;) {
+    struct run *r;
+
+    if (!(map[pg / 8] & (1 << (pg % 8))))
+      continue;
+    r = (struct run *)P2V(pg * PGSIZE);
+    if (pg * PGSIZE < 0x100000000ULL) {
+      r->next = kmem.lowlist;
+      kmem.lowlist = r;
+    } else {
+      r->next = kmem.freelist;
+      kmem.freelist = r;
+    }
+    kmem.nfree++;
   }
   if (kmem.use_lock)
-    release(&kmem.lock);
-  return (char *)r;
+    mtx_leave(&kmem.lock);
+}
+
+static int in_run(struct run *r, uint64_t lo, uint64_t hi) {
+  return V2P(r) >= lo && V2P(r) < hi;
+}
+
+static uint64_t count_run(struct run *r, uint64_t lo, uint64_t hi) {
+  uint64_t n = 0;
+
+  for (; r != 0; r = r->next)
+    n += in_run(r, lo, hi);
+  return n;
+}
+
+static void unlink_run(struct run **pp, uint64_t lo, uint64_t hi) {
+  while (*pp != 0)
+    if (in_run(*pp, lo, hi)) {
+      *pp = (*pp)->next;
+      kmem.nfree--;
+    } else
+      pp = &(*pp)->next;
+}
+
+// take the run at once or something else grabs it
+int kalloc_claim(uint64_t pa, uint64_t npages) {
+  uint64_t hi = pa + npages * PGSIZE;
+  int r = -1;
+
+  if (kmem.use_lock)
+    mtx_enter(&kmem.lock);
+  if (count_run(kmem.freelist, pa, hi) + count_run(kmem.lowlist, pa, hi) ==
+      npages) {
+    unlink_run(&kmem.freelist, pa, hi);
+    unlink_run(&kmem.lowlist, pa, hi);
+    r = 0;
+  }
+  if (kmem.use_lock)
+    mtx_leave(&kmem.lock);
+  return r;
+}
+
+char *kalloc_low(void) {
+  char *p;
+
+  if (kmem.use_lock)
+    mtx_enter(&kmem.lock);
+  p = take(&kmem.lowlist);
+  if (kmem.use_lock)
+    mtx_leave(&kmem.lock);
+  return p;
 }

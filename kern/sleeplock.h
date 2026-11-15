@@ -2,17 +2,16 @@
 #define PRONINX_X86_64_SLEEPLOCK_H
 
 #include "inc/types.h"
-#include "spinlock.h"
+#include "mutex.h"
 
-//
-// Long-term locks for processes
 struct sleeplock {
-  uint locked;        // Is the lock held?
-  struct spinlock lk; // spinlock protecting this sleep lock
+  uint locked; // held
+  uint waiters;
+  struct mutex lk;
 
-  // For debugging:
-  char *name; // Name of lock.
-  pid_t pid;  // Process holding lock
+  char *name;
+  pid_t pid; // holder
+  struct proc *owner;
 };
 
 #endif /* ifndef PRONINX_X86_64_SLEEPLOCK_H */

@@ -1,0 +1,4 @@
+desc=system logger
+requires=var
+before=sshd fnuplug moused
+run=/usr/bin/syslogd

@@ -1,0 +1,24 @@
+#!/usr/bin/sh
+# run the tests named, or all that run alone; each says ok or FAILED, and so
+# does the run. fstorture and sertest want a volume and a line of their own,
+# hibtest a hibernation
+cd /usr/tests || exit 1
+all="alarmtest eventtest exectest faulttest fdtest fnuonly fnuthreads fputest identtest
+inettest mathtest mmaptest nxtest pipetest psmtest ptytest readytest schedtest sshtest swaptest synctest
+threadtest unixtest unveiltest inittest svctest usertest flocktest cksumtest"
+failed=
+for t in ${*:-$all}; do
+	if ./$t > /tmp/test.$t 2>&1; then
+		echo "$t: ok"
+	else
+		echo "$t: FAILED"
+		tail -5 /tmp/test.$t
+		failed="$failed $t"
+	fi
+	rm -f /tmp/test.$t
+done
+if [ -n "$failed" ]; then
+	echo "run: FAILED:$failed"
+	exit 1
+fi
+echo "run: all ok"

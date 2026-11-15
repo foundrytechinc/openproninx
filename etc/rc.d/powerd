@@ -1,0 +1,4 @@
+desc=CPU speed control
+requires=var
+run=/usr/bin/powerd -B nominal
+restart=failure

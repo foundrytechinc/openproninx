@@ -15,7 +15,7 @@ jobs:
       - name: Install the build toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y bmake clang lld llvm gdisk mtools dosfstools qemu-system-x86 ovmf
+          sudo apt-get install -y bmake clang lld llvm qemu-system-x86 ovmf
       - name: Build and boot-smoke images without mutating sources
         run: bmake ci
       - name: Publish evaluation images
@@ -24,11 +24,11 @@ jobs:
           name: fnu-proninx-core-images
           path: obj/*.img
           if-no-files-found: error
-      - name: Publish UFS2 system payload
+      - name: Publish the staged root tree
         uses: actions/upload-artifact@v4
         with:
-          name: fnu-proninx-system-payload
-          path: obj/user
+          name: fnu-proninx-root-tree
+          path: obj/root
           if-no-files-found: error
 
   ufs2-system-image:
@@ -36,22 +36,21 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - name: Restore compiled userspace
+      - name: Restore the staged root tree
         uses: actions/download-artifact@v4
         with:
-          name: fnu-proninx-system-payload
-          path: obj/user
-      - name: Build and verify UFS2 system image in FreeBSD
+          name: fnu-proninx-root-tree
+          path: obj/root
+      - name: Make the UFS2 root in FreeBSD and check it with FreeBSD's fsck
         uses: vmactions/freebsd-vm@v1
         with:
           usesh: true
           run: |
-            chmod +x tools/build-ufs2-system.sh
-            ./tools/build-ufs2-system.sh obj/fnu-system.ufs
-            fsck_ffs -n obj/fnu-system.ufs
-      - name: Publish UFS2 system image
+            makefs -t ffs -s 32m -o version=2,bsize=8192,fsize=1024,label=FNU-ROOT obj/fnu-root.ufs obj/root
+            fsck_ffs -n obj/fnu-root.ufs
+      - name: Publish the UFS2 root
         uses: actions/upload-artifact@v4
         with:
-          name: fnu-proninx-ufs2-system
-          path: obj/fnu-system.ufs
+          name: fnu-proninx-ufs2-root
+          path: obj/fnu-root.ufs
           if-no-files-found: error

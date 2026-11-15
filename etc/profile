@@ -1,0 +1,18 @@
+# System-wide profile, read by every login shell.
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+export PATH
+TERM=${TERM:-vt100}
+export TERM
+
+# sh(1) reads this file for each interactive shell; the prompt lives there
+ENV=$HOME/.shrc
+export ENV
+
+# then /etc/profile.d
+for _file in /etc/profile.d/*.sh; do
+	if [ -f "$_file" ]; then
+		. "$_file"
+	fi
+done
+unset _file

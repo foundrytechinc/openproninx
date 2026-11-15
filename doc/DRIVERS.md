@@ -57,26 +57,14 @@ struct device {
 
 ## 3. Driver Lifecycle & Attachment Process
 
-The device attachment workflow follows a strict multi-stage lifecycle:
-
-```mermaid
-flowchart TD
-    A[driver_framework_init] --> B[Driver Registration: driver_register]
-    B --> C[PCI Bus Scan: driver_attach_pci_devices]
-    C --> D[Device Discovery on Bus/Dev/Func]
-    D --> E[Probe: drv->probe dev]
-    E -->|Score > 0| F[Select Best Matching Driver]
-    F --> G[Resource Allocation: 64-bit BAR decode, ioremap MMIO, Bus Master, IOAPIC IRQ]
-    G --> H[Attach: drv->attach dev]
-    H -->|Success| I[Device Active: dev->active = 1]
-    I --> J[Shutdown: driver_shutdown_all before power state change]
-```
-
 ### 1. Registration (`driver_register`)
 Drivers register themselves during kernel boot (e.g. `e1000_driver_init()`, `ahci_driver_init()`, `nvme_driver_init()` in `main.c`). The driver structure is stored in the global driver table.
 
 ### 2. Enumeration & Probing
-`driver_attach_pci_devices()` iterates through all PCI buses (0–255), devices (0–31), and functions (0–7):
+`driver_attach_pci_devices()` scans buses 0-255, devices 0-31 and functions
+0-7. Before any driver attaches, USB host controllers are taken over from the
+firmware (`kern/usb/usb_takeover.c`): BIOS ownership is released, legacy SMIs
+are turned off and the controller is halted. Then, for each function:
 1. Reads PCI Vendor ID and Device ID.
 2. Uses a unified 64-bit BAR decoder (`pci_read_bars()`) to extract physical MMIO bases and sizes into `dev->mmio_paddr` and `dev->mmio_size`.
 3. Invokes the `probe()` callback of each registered PCI driver. The driver evaluates compatibility and returns a match priority score (e.g. 100 for high-fidelity native match, 50 for generic fallback).
@@ -136,34 +124,46 @@ default:
 ### Polling Fallback
 To safeguard against lost interrupts or firmware latency, the timer tick (10 ms period) executes `driver_poll_all()`, which invokes `dev->driver->poll(dev)` for active devices.
 
----
-
-## 6. Intel E1000 Driver Implementation Walkthrough
-
-The Intel E1000 driver ([`kern/net/e1000.c`](../kern/net/e1000.c)) provides full Gigabit Ethernet support for Intel 82540EM, 82545EM, 82543GC, 82574L, and related controllers.
-
-### Probing
-Matches Intel PCI Vendor ID `0x8086` and device IDs (`0x100e`, `0x100f`, `0x1004`, `0x10d3`, etc.).
-
-### Initialization Sequence
-1. **Device Reset:** Asserts `E1000_CTRL_RST`, waits 20 µs, deasserts reset.
-2. **Link Configuration:** Enables Full Duplex (`CTRL_FD`), Auto-Speed Detection (`CTRL_ASDE`), and Link Up (`CTRL_SLU`).
-3. **MAC Address Extraction:** Reads Receive Address Registers `RAL0`/`RAH0` or falls back to EEPROM words 0..2 via `EERD`.
-4. **Transmit Descriptor Ring (TX):**
-   - 64 descriptors (`struct e1000_tx_desc`), aligned to 16 bytes.
-   - Base address written to `TDBAL` / `TDBAH`.
-   - Length written to `TDLEN`.
-   - `TCTL` configured with `TCTL_EN | TCTL_PSP | (15 << 4) | (64 << 12)`.
-   - `TIPG` configured for IEEE 802.3 inter-packet gap.
-5. **Receive Descriptor Ring (RX):**
-   - 64 descriptors (`struct e1000_rx_desc`), each populated with a 2048-byte `kalloc()` buffer.
-   - Base address written to `RDBAL` / `RDBAH`.
-   - `RDH` set to `0`, `RDT` set to `63` (giving hardware ownership of all buffers).
-   - `RCTL` configured with `RCTL_EN | RCTL_BAM | RCTL_BSIZE_2048 | RCTL_SECRC`.
-6. **Interrupt Mask:** Enables `RXT0` (RX timer), `TXDW` (TX descriptor writeback), `LSC` (link status change), `RXO` (overrun), `RXDMT0` (threshold).
-7. **Network Binding:** Registers `em0` with `proninx_net_register()`.
+### How a device gets its interrupt
+`driver_setup_intr` tries MSI-X, then MSI, then the INTx pin. A pin is
+routed through the ACPI `_PRT` (`kern/acpi/prt.c`), then the MP table, then
+the interrupt line register. PCI pins are level triggered, active low,
+unless the firmware says otherwise.
 
 ---
+
+## 6. Examples
+
+### Intel PRO/1000 (`kern/net/e1000.c`)
+
+Modelled on DragonFly's `if_em.c`, on top of Intel's shared code in
+`third_party/e1000/`. The shared code does reset, NVM, PHY and link. The
+driver adds `e1000_osdep.[ch]`, the descriptor rings and `em_reset`. Device
+ids come from FreeBSD's `em` and `igb`.
+
+### PS/2 mouse (`kern/psm.c`, `kern/atkbdc.c`)
+
+FreeBSD's `psm(4)` on its `atkbdc(4)`. The controller keeps a queue per
+device so bytes are not lost. Vendor probes run in FreeBSD's order. Bad
+packets cause a resync or a reset. Touchpad gestures are turned into mouse
+events in the driver and come out on `/dev/wsmouseN`. See
+[`VIDEO.md`](VIDEO.md).
+
+### USB host controllers (`kern/usb/xhci.c`, `kern/usb/ehci.c`)
+
+Both implement `struct usb_bus_methods` for `kern/usb/usbdi.c`. xHCI uses
+slots, contexts and rings. EHCI uses queue heads and qTDs, a periodic tree
+of 255 queue heads, iTDs and siTDs. EHCI descriptors come from `kalloc_low()`
+and data buffers from the DMA arena below 4 GB. Low and full speed ports go
+to the companion controller. Up to four EHCI controllers attach.
+
+### Serial lines (`kern/uart.c`)
+
+A port of OpenBSD's `com(4)`. It probes the four legacy ports, detects the
+UART type and measures the FIFO. Each port is a terminal, `/dev/ttyuN`, and
+`stty` sets speed, size, parity, stop bits and flow control. Kernel messages
+go to the first port by polling, so `printf` works before anything else is
+set up. The modem control ioctls drive DTR, RTS and break.
 
 ## 7. How to Write a New Device Driver
 
@@ -181,7 +181,7 @@ static int mydriver_probe(struct device *dev) {
 }
 
 static int mydriver_attach(struct device *dev) {
-  cprintf("MYDEV: Initializing hardware at MMIO 0x%p\n", dev->mmio_vaddr);
+  printf("MYDEV: Initializing hardware at MMIO %p\n", dev->mmio_vaddr);
   // Perform device initialization...
   return 0;
 }

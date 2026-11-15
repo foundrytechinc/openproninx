@@ -1,4 +1,13 @@
-#include "user/user.h"
+#include <libgen.h>
+#include <pwd.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <errno.h>
+#include <sys/mount.h>
+#include <fnu/sys.h>
+#include <util.h>
 #include "inc/product.h"
 
 static void padzero(char *s) {
@@ -48,20 +57,28 @@ static void itoap(int value, char *buf, int width) {
 }
 
 static void get_user_name(char *buf, size_t len) {
-  struct user_info info;
-  int index;
-  int uid = getuid();
-  for (index = 0; users(&info, index) == 0; index++) {
-    if (info.uid == (uint)uid) {
-      safestrcpy(buf, info.name, len);
-      return;
-    }
-  }
-  safestrcpy(buf, "unknown", len);
+  struct passwd *account;
+
+  if ((account = getpwuid(getuid())) != 0)
+    strlcpy(buf, account->pw_name, len);
+  else
+    strlcpy(buf, "unknown", len);
+}
+
+static void get_shell(char *buf, size_t len) {
+  struct passwd *account;
+  const char *path = getenv("SHELL");
+
+  if ((path == 0 || *path == 0) && (account = getpwuid(getuid())) != 0)
+    path = account->pw_shell;
+  if (path == 0 || *path == 0)
+    path = "unknown";
+  strlcpy(buf, path, len);
+  strlcpy(buf, basename(buf), len);
 }
 
 static void format_uptime(uint64 ticks, char *buf, size_t len) {
-  uint64 total_seconds = ticks / 100;
+  uint64 total_seconds = ticks / FNU_HZ;
   uint64 days = total_seconds / 86400;
   uint64 hours = (total_seconds % 86400) / 3600;
   uint64 minutes = (total_seconds % 3600) / 60;
@@ -80,41 +97,41 @@ static void format_uptime(uint64 ticks, char *buf, size_t len) {
 
   int pos = 0;
   if (days > 0) {
-    safestrcpy(buf + pos, d, len - pos);
+    strlcpy(buf + pos, d, len - pos);
     pos = strlen(buf);
-    safestrcpy(buf + pos, " day", len - pos);
+    strlcpy(buf + pos, " day", len - pos);
     pos = strlen(buf);
     if (days != 1) {
-      safestrcpy(buf + pos, "s", len - pos);
+      strlcpy(buf + pos, "s", len - pos);
       pos = strlen(buf);
     }
-    safestrcpy(buf + pos, " ", len - pos);
+    strlcpy(buf + pos, " ", len - pos);
     pos = strlen(buf);
-    safestrcpy(buf + pos, hh, len - pos);
+    strlcpy(buf + pos, hh, len - pos);
     pos = strlen(buf);
-    safestrcpy(buf + pos, ":", len - pos);
+    strlcpy(buf + pos, ":", len - pos);
     pos = strlen(buf);
-    safestrcpy(buf + pos, mm, len - pos);
+    strlcpy(buf + pos, mm, len - pos);
     pos = strlen(buf);
-    safestrcpy(buf + pos, ":", len - pos);
+    strlcpy(buf + pos, ":", len - pos);
     pos = strlen(buf);
-    safestrcpy(buf + pos, ss, len - pos);
+    strlcpy(buf + pos, ss, len - pos);
   } else if (hours > 0) {
-    safestrcpy(buf + pos, hh, len - pos);
+    strlcpy(buf + pos, hh, len - pos);
     pos = strlen(buf);
-    safestrcpy(buf + pos, ":", len - pos);
+    strlcpy(buf + pos, ":", len - pos);
     pos = strlen(buf);
-    safestrcpy(buf + pos, mm, len - pos);
+    strlcpy(buf + pos, mm, len - pos);
     pos = strlen(buf);
-    safestrcpy(buf + pos, ":", len - pos);
+    strlcpy(buf + pos, ":", len - pos);
     pos = strlen(buf);
-    safestrcpy(buf + pos, ss, len - pos);
+    strlcpy(buf + pos, ss, len - pos);
   } else {
-    safestrcpy(buf + pos, mm, len - pos);
+    strlcpy(buf + pos, mm, len - pos);
     pos = strlen(buf);
-    safestrcpy(buf + pos, ":", len - pos);
+    strlcpy(buf + pos, ":", len - pos);
     pos = strlen(buf);
-    safestrcpy(buf + pos, ss, len - pos);
+    strlcpy(buf + pos, ss, len - pos);
   }
 }
 
@@ -131,15 +148,15 @@ static void format_mem_fixed(uint64 whole, uint64 frac, const char *unit,
     }
   }
   int pos = 0;
-  safestrcpy(buf + pos, w, len - pos);
+  strlcpy(buf + pos, w, len - pos);
   pos = strlen(buf);
-  safestrcpy(buf + pos, ".", len - pos);
+  strlcpy(buf + pos, ".", len - pos);
   pos = strlen(buf);
-  safestrcpy(buf + pos, f, len - pos);
+  strlcpy(buf + pos, f, len - pos);
   pos = strlen(buf);
-  safestrcpy(buf + pos, " ", len - pos);
+  strlcpy(buf + pos, " ", len - pos);
   pos = strlen(buf);
-  safestrcpy(buf + pos, unit, len - pos);
+  strlcpy(buf + pos, unit, len - pos);
 }
 
 static void format_mem(uint64 bytes, char *buf, size_t len) {
@@ -155,24 +172,23 @@ static void format_mem(uint64 bytes, char *buf, size_t len) {
     char k[16];
     itoap((int)(bytes / 1024), k, 1);
     int pos = 0;
-    safestrcpy(buf + pos, k, len - pos);
+    strlcpy(buf + pos, k, len - pos);
     pos = strlen(buf);
-    safestrcpy(buf + pos, " KiB", len - pos);
+    strlcpy(buf + pos, " KiB", len - pos);
   } else {
     char b[16];
     itoap((int)bytes, b, 1);
     int pos = 0;
-    safestrcpy(buf + pos, b, len - pos);
+    strlcpy(buf + pos, b, len - pos);
     pos = strlen(buf);
-    safestrcpy(buf + pos, " B", len - pos);
+    strlcpy(buf + pos, " B", len - pos);
   }
 }
 
 static void cat(char *b, size_t len, const char *s) {
-  safestrcpy(b + strlen(b), s, len - strlen(b));
+  strlcpy(b + strlen(b), s, len - strlen(b));
 }
 
-// The console repaints on every write(), so the whole report goes out at once.
 #define OUT_MAX 8192
 static char out[OUT_MAX];
 static int out_len;
@@ -193,7 +209,6 @@ static void out_flush(void) {
   out_len = 0;
 }
 
-// four blocks per row, sized to whatever console we ended up on
 static void print_palette(int columns) {
   static const char *colour[] = {"30", "31", "32", "33",
                                 "34", "35", "36", "37"};
@@ -261,26 +276,24 @@ static void format_hz(uint64 hz, char *buf, size_t len) {
   char a[16], b[16];
 
   if (hz == 0) {
-    safestrcpy(buf, "unknown", len);
+    strlcpy(buf, "unknown", len);
     return;
   }
   if (hz >= 1000000000ULL) {
     itoap((int)(hz / 1000000000ULL), a, 1);
     itoap((int)((hz % 1000000000ULL) / 10000000ULL), b, 2);
     if (strlen(b) < 2) { b[1] = b[0]; b[0] = '0'; b[2] = 0; }
-    safestrcpy(buf, a, len);
-    safestrcpy(buf + strlen(buf), ".", len - strlen(buf));
-    safestrcpy(buf + strlen(buf), b, len - strlen(buf));
-    safestrcpy(buf + strlen(buf), " GHz", len - strlen(buf));
+    strlcpy(buf, a, len);
+    strlcpy(buf + strlen(buf), ".", len - strlen(buf));
+    strlcpy(buf + strlen(buf), b, len - strlen(buf));
+    strlcpy(buf + strlen(buf), " GHz", len - strlen(buf));
   } else {
     itoap((int)(hz / 1000000ULL), a, 1);
-    safestrcpy(buf, a, len);
-    safestrcpy(buf + strlen(buf), " MHz", len - strlen(buf));
+    strlcpy(buf, a, len);
+    strlcpy(buf + strlen(buf), " MHz", len - strlen(buf));
   }
 }
 
-// the brand string carries the part's rated clock. calibration lands a few
-// megahertz off it, and the number on the box is the one people recognise
 static int brand_clock(const char *brand, char *buf, size_t len) {
   int i, whole, frac, digits;
 
@@ -325,8 +338,6 @@ static int brand_clock(const char *brand, char *buf, size_t len) {
   return -1;
 }
 
-// what the fetches all do: drop the trademark noise and the clock suffix, so
-// the model is a model and not a paragraph
 static void tidy_brand(const char *brand, char *buf, size_t len) {
   static const char *mark[] = {"(R)", "(TM)", "(r)", "(tm)"};
   static const char *noun[] = {" CPU", " Processor"};
@@ -343,7 +354,6 @@ static void tidy_brand(const char *brand, char *buf, size_t len) {
         break;
       }
     }
-    // "CPU" and "Processor" are only noise where they trail the model
     for (k = 0; !skipped && k < sizeof(noun) / sizeof(noun[0]); k++) {
       l = strlen(noun[k]);
       if (strncmp(brand + i, noun[k], l) != 0)
@@ -365,13 +375,13 @@ static void tidy_brand(const char *brand, char *buf, size_t len) {
     n--;
   buf[n] = 0;
   if (n == 0)
-    safestrcpy(buf, brand, len);
+    strlcpy(buf, brand, len);
 }
 
 static void num(int v, char *buf, size_t len) {
   char t[16];
   itoap(v, t, 1);
-  safestrcpy(buf, t, len);
+  strlcpy(buf, t, len);
 }
 
 #define FIELDS_MAX 28
@@ -382,12 +392,11 @@ static int nfields;
 static void field(const char *k, const char *v) {
   if (nfields >= FIELDS_MAX)
     return;
-  safestrcpy(fkey[nfields], k, sizeof(fkey[0]));
-  safestrcpy(fval[nfields], v, sizeof(fval[0]));
+  strlcpy(fkey[nfields], k, sizeof(fkey[0]));
+  strlcpy(fval[nfields], v, sizeof(fval[0]));
   nfields++;
 }
 
-// green while there is room, yellow when it is filling, red when it is not
 static const char *fill_colour(int pct) {
   if (pct >= 90)
     return "\033[1;31m";
@@ -397,12 +406,11 @@ static const char *fill_colour(int pct) {
 }
 
 static int percent(uint64 used, uint64 total) {
-  if (total == 0)
-    return 0;
+  if (total == 0 || used > total)
+    return total == 0 ? 0 : 100;
   return (int)((used * 100) / total);
 }
 
-// "  47% [####------]" in the colour the level deserves
 static void gauge(int pct, char *b, size_t len) {
   char n[16];
   int i, filled = (pct * 10) / 100;
@@ -419,44 +427,42 @@ static void gauge(int pct, char *b, size_t len) {
 }
 
 int main(void) {
-  struct info sys;
-  struct hwinfo hw;
-  struct diskinfo disks[DISK_ENTRIES_MAX];
-  struct df_stat mounts[DF_ENTRIES_MAX];
-  char user_name[USER_NAME_MAX];
+  struct fnu_info sys;
+  struct fnu_hwinfo hw;
+  struct fnu_diskinfo *disks = 0;
+  struct fnu_fsstat *mounts = 0;
+  char user_name[FNU_USER_NAME_MAX];
   char buf[96], tmp[64], tmp2[64];
   const char **logo;
   int have_hw, ndisks, nmounts, i, logo_w, line, logo_n;
 
-  if (info(&sys) < 0) {
+  if (fnu_info(&sys) < 0) {
     dprintf(2, "fnufetch: unable to query system information\n");
-    exit();
+    exit(1);
   }
-  have_hw = hwinfo(&hw) == 0;
-  ndisks = diskinfo(disks, DISK_ENTRIES_MAX);
-  if (ndisks < 0)
+  have_hw = fnu_hwinfo(&hw) == 0;
+  if ((ndisks = fnu_disks(&disks)) < 0)
     ndisks = 0;
-  nmounts = df(mounts, DF_ENTRIES_MAX);
-  if (nmounts < 0)
+  if ((nmounts = fnu_volumes(&mounts)) < 0)
     nmounts = 0;
   get_user_name(user_name, sizeof(user_name));
 
   field("OS", FNU_PRODUCT_NAME);
   field("Kernel", FNU_PRODUCT_VERSION);
-  field("Shell", "PSH (Proninx Shell, FNU)");
+  get_shell(tmp, sizeof(tmp));
+  field("Shell", tmp);
   field("Arch", "x86_64 (amd64)");
 
   if (have_hw) {
     tidy_brand(hw.cpu_brand[0] ? hw.cpu_brand : hw.cpu_vendor, buf,
                sizeof(buf));
     num((int)hw.cpu_count, tmp, sizeof(tmp));
-    safestrcpy(buf + strlen(buf), " (", sizeof(buf) - strlen(buf));
-    safestrcpy(buf + strlen(buf), tmp, sizeof(buf) - strlen(buf));
-    safestrcpy(buf + strlen(buf), hw.cpu_count == 1 ? " core)" : " cores)",
+    strlcpy(buf + strlen(buf), " (", sizeof(buf) - strlen(buf));
+    strlcpy(buf + strlen(buf), tmp, sizeof(buf) - strlen(buf));
+    strlcpy(buf + strlen(buf), hw.cpu_count == 1 ? " core)" : " cores)",
                sizeof(buf) - strlen(buf));
     field("CPU", buf);
 
-    // the rated clock, and the turbo ceiling when the part admits to one
     if (hw.cpu_base_hz != 0)
       format_hz(hw.cpu_base_hz, tmp, sizeof(tmp));
     else if (brand_clock(hw.cpu_brand, tmp, sizeof(tmp)) < 0)
@@ -479,8 +485,8 @@ int main(void) {
   if (sys.total_ram > sys.free_ram)
     format_mem(sys.total_ram - sys.free_ram, tmp, sizeof(tmp));
   else
-    safestrcpy(tmp, "0 B", sizeof(tmp));
-  safestrcpy(buf, tmp, sizeof(buf));
+    strlcpy(tmp, "0 B", sizeof(tmp));
+  strlcpy(buf, tmp, sizeof(buf));
   cat(buf, sizeof(buf), " / ");
   cat(buf, sizeof(buf), tmp2);
   cat(buf, sizeof(buf), "  ");
@@ -488,55 +494,57 @@ int main(void) {
   field("Memory", buf);
 
   for (i = 0; i < nmounts; i++) {
+    uint64 total = mounts[i].blocks * mounts[i].bsize;
+    uint64 used = (mounts[i].blocks - mounts[i].bfree) * mounts[i].bsize;
     char key[16];
-    if (!mounts[i].is_present || mounts[i].mount_point[0] == 0 ||
-        mounts[i].mount_point[0] == '-')
-      continue; /* df reports ram as a mount; Memory already covers it */
-    format_mem(mounts[i].used_bytes, tmp, sizeof(tmp));
-    safestrcpy(buf, tmp, sizeof(buf));
+
+    // devfs holds no blocks
+    if (total == 0)
+      continue;
+    format_mem(used, tmp, sizeof(tmp));
+    strlcpy(buf, tmp, sizeof(buf));
     cat(buf, sizeof(buf), " / ");
-    format_mem(mounts[i].total_bytes, tmp, sizeof(tmp));
+    format_mem(total, tmp, sizeof(tmp));
     cat(buf, sizeof(buf), tmp);
     cat(buf, sizeof(buf), "  ");
-    gauge(percent(mounts[i].used_bytes, mounts[i].total_bytes), buf,
-          sizeof(buf));
-    if (mounts[i].is_read_only)
+    gauge(percent(used, total), buf, sizeof(buf));
+    if (mounts[i].flags & FNU_MNT_RDONLY)
       cat(buf, sizeof(buf), " ro");
-    safestrcpy(key, mounts[i].mount_point, sizeof(key));
+    strlcpy(key, mounts[i].on, sizeof(key));
     field(key, buf);
   }
 
   for (i = 0; i < ndisks; i++) {
     char key[16];
-    safestrcpy(buf, disks[i].model, sizeof(buf));
+    strlcpy(buf, disks[i].model, sizeof(buf));
     format_mem(disks[i].sectors * (uint64)disks[i].sector_size, tmp,
                sizeof(tmp));
-    safestrcpy(buf + strlen(buf), ", ", sizeof(buf) - strlen(buf));
-    safestrcpy(buf + strlen(buf), tmp, sizeof(buf) - strlen(buf));
+    strlcpy(buf + strlen(buf), ", ", sizeof(buf) - strlen(buf));
+    strlcpy(buf + strlen(buf), tmp, sizeof(buf) - strlen(buf));
     if (disks[i].link_gen > 0) {
       static const char *gen[] = {"", " SATA-I", " SATA-II", " SATA-III"};
       if (disks[i].link_gen <= 3)
-        safestrcpy(buf + strlen(buf), gen[disks[i].link_gen],
+        strlcpy(buf + strlen(buf), gen[disks[i].link_gen],
                    sizeof(buf) - strlen(buf));
     }
-    safestrcpy(key, "Disk", sizeof(key));
+    strlcpy(key, "Disk", sizeof(key));
     if (ndisks > 1) {
       num(i, tmp, sizeof(tmp));
-      safestrcpy(key + 4, tmp, sizeof(key) - 4);
+      strlcpy(key + 4, tmp, sizeof(key) - 4);
     }
     field(key, buf);
   }
 
   if (have_hw) {
     num((int)hw.fb_width, tmp, sizeof(tmp));
-    safestrcpy(buf, tmp, sizeof(buf));
-    safestrcpy(buf + strlen(buf), "x", sizeof(buf) - strlen(buf));
+    strlcpy(buf, tmp, sizeof(buf));
+    strlcpy(buf + strlen(buf), "x", sizeof(buf) - strlen(buf));
     num((int)hw.fb_height, tmp, sizeof(tmp));
-    safestrcpy(buf + strlen(buf), tmp, sizeof(buf) - strlen(buf));
-    safestrcpy(buf + strlen(buf), " @ ", sizeof(buf) - strlen(buf));
+    strlcpy(buf + strlen(buf), tmp, sizeof(buf) - strlen(buf));
+    strlcpy(buf + strlen(buf), " @ ", sizeof(buf) - strlen(buf));
     num((int)hw.fb_bpp, tmp, sizeof(tmp));
-    safestrcpy(buf + strlen(buf), tmp, sizeof(buf) - strlen(buf));
-    safestrcpy(buf + strlen(buf), " bpp", sizeof(buf) - strlen(buf));
+    strlcpy(buf + strlen(buf), tmp, sizeof(buf) - strlen(buf));
+    strlcpy(buf + strlen(buf), " bpp", sizeof(buf) - strlen(buf));
     if (hw.fb_vram) {
       format_mem(hw.fb_vram, tmp, sizeof(tmp));
       cat(buf, sizeof(buf), ", ");
@@ -547,11 +555,11 @@ int main(void) {
     field("Display", buf);
 
     num((int)hw.fb_columns, tmp, sizeof(tmp));
-    safestrcpy(buf, tmp, sizeof(buf));
-    safestrcpy(buf + strlen(buf), " x ", sizeof(buf) - strlen(buf));
+    strlcpy(buf, tmp, sizeof(buf));
+    strlcpy(buf + strlen(buf), " x ", sizeof(buf) - strlen(buf));
     num((int)hw.fb_rows, tmp, sizeof(tmp));
-    safestrcpy(buf + strlen(buf), tmp, sizeof(buf) - strlen(buf));
-    safestrcpy(buf + strlen(buf), " cells", sizeof(buf) - strlen(buf));
+    strlcpy(buf + strlen(buf), tmp, sizeof(buf) - strlen(buf));
+    strlcpy(buf + strlen(buf), " cells", sizeof(buf) - strlen(buf));
     field("Console", buf);
 
     num((int)hw.pci_total, buf, sizeof(buf));
@@ -566,7 +574,6 @@ int main(void) {
   field("Userland", "FNU (Foundry is Not Unix)");
   field("FNU Version", FNU_VERSION);
 
-  // a wide console gets the big capybara, a narrow one the compact body
   if (have_hw && hw.fb_columns >= 110) {
     logo = logo_wide;
     logo_w = 54;
@@ -612,5 +619,7 @@ int main(void) {
   out_str("\n");
   print_palette(have_hw ? (int)hw.fb_columns : 80);
   out_flush();
-  exit();
+  fnu_table_free(disks);
+  fnu_table_free(mounts);
+  exit(0);
 }

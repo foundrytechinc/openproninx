@@ -1,0 +1,4 @@
+# address name alias ...
+#
+# Read before the name servers are asked, by fnu_resolve in libfnu.
+127.0.0.1	localhost

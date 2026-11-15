@@ -1,58 +1,52 @@
-/* Simple linker script for the JOS kernel.
-   See the GNU ld 'info' manual ("info ld") to learn the syntax. */
+/* user programs: linked at 2M, the pages under it never mapped */
 
-OUTPUT_FORMAT("elf64-x86-64", "elf64-x86-64", "elf64-x86-64")
+OUTPUT_FORMAT("elf64-x86-64")
 OUTPUT_ARCH(i386:x86-64)
 ENTRY(_start)
 
 SECTIONS
 {
-	/* Link the kernel at this address: "." means the current address */
-    . = 0x0;
+	. = 0x200000;
 
 	.text : {
-		*(.text .stub .text.* .gnu.linkonce.t.*)
+		*(.text .text.*)
 	}
 
-	PROVIDE(etext = .);	/* Define the 'etext' symbol to this value */
+	PROVIDE(etext = .);
 
 	.rodata : {
-		*(.rodata .rodata.* .gnu.linkonce.r.*)
+		*(.rodata .rodata.*)
 	}
 
-	/* Adjust the address for the data segment to the next page */
 	. = ALIGN(0x1000);
 
 	.data : {
-		*(.data)
+		*(.data .data.*)
 	}
 
 	PROVIDE(edata = .);
 
+	/* the thread-local template: initialised, then zeroed */
+	.tdata : {
+		PROVIDE(__tls_start = .);
+		*(.tdata .tdata.*)
+		PROVIDE(__tdata_end = .);
+	}
+	.tbss : {
+		*(.tbss .tbss.*)
+		*(.tcommon)
+		PROVIDE(__tls_end = .);
+	}
+	PROVIDE(__tls_align = MAX(ALIGNOF(.tdata), ALIGNOF(.tbss)));
+
 	.bss : {
-		*(.bss)
+		*(.bss .bss.*)
+		*(COMMON)
 	}
 
 	PROVIDE(end = .);
 
-	/* Include debugging information in kernel memory */
-	.stab : {
-		PROVIDE(__STAB_BEGIN__ = .);
-		*(.stab);
-		PROVIDE(__STAB_END__ = .);
-		BYTE(0)		/* Force the linker to allocate space
-				   for this section */
-	}
-
-	.stabstr : {
-		PROVIDE(__STABSTR_BEGIN__ = .);
-		*(.stabstr);
-		PROVIDE(__STABSTR_END__ = .);
-		BYTE(0)		/* Force the linker to allocate space
-				   for this section */
-	}
-
 	/DISCARD/ : {
-		*(.eh_frame .note.GNU-stack .comment)
+		*(.eh_frame .comment)
 	}
 }
