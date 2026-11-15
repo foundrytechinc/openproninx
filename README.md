@@ -1,5 +1,11 @@
 # OpenProninx
-
+```
+**WARNING (Linux builds):** do not use the `makefs` from Debian/Ubuntu (package makefs, 20190105).
+It writes the UFS2 superblock at 8 KiB instead of 64 KiB, so the build fails with
+mkimg: not UFS2, and even if forced through, the bootloader rejects the image.
+Build makefs from source (we used a FreeBSD/DragonFly-derived port: https://github.com/kusumi/makefs) and put it before `/usr/sbin` in `PATH`. Verify the result:
+ od -A d -t x1 -j $((65536+1372)) -N 4 obj/fs.img   # expected: 19 01 54 19
+```
 **OpenProninx** is a free and independent operating system distributed under the **BSD 3-Clause License**. It is developed by **Foundry Tech Collective.**, founded by Vyacheslav Pronin.
 
 OpenProninx originated from **PRONINX**, an earlier operating system created by the same developer as part of Pronin Software Distribution. PRONINX was originally based on the **xv6** kernel, specifically its **x86_64 port**.
