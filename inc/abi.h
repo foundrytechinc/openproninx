@@ -1034,6 +1034,7 @@ struct fnu_ready {
 #define FNU_EVF_PROC 4
 #define FNU_EVF_SIGNAL 5
 #define FNU_EVF_TIMER 6
+#define FNU_EVF_USER 7
 
 #define FNU_EV_ADD 0x0001
 #define FNU_EV_DELETE 0x0002
@@ -1062,6 +1063,8 @@ struct fnu_ready {
 #define FNU_NOTE_MSECONDS 0x0002
 #define FNU_NOTE_USECONDS 0x0004
 #define FNU_NOTE_NSECONDS 0x0008
+// FNU_EVF_USER (same bit as NOTE_TRIGGER in BSD)
+#define FNU_NOTE_TRIGGER 0x0001
 
 #define FNU_EVENTS_MAX 4096
 

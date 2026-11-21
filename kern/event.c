@@ -246,6 +246,9 @@ static int attach(struct eventq *eq, struct knote *kn) {
     callout_init(&kn->co);
     callout_reset(&kn->co, timer_ticks(kn), timer_fire, kn);
     return 0;
+  case FNU_EVF_USER:
+    // userspace wakeup (nginx EVFILT_USER); ident is a private id
+    return 0;
   default:
     return FNU_ERR_INVALID;
   }
@@ -295,6 +298,13 @@ static int change(struct eventq *eq, const struct fnu_event *c) {
     kn->disabled = 1;
   if (c->flags & FNU_EV_ENABLE)
     kn->disabled = 0;
+  // EVFILT_USER: NOTE_TRIGGER increments and wakes the waiter
+  if (kn->ev.filter == FNU_EVF_USER && (c->fflags & FNU_NOTE_TRIGGER)) {
+    mtx_enter(&ev_lock);
+    kn->count++;
+    mtx_leave(&ev_lock);
+    selwakeup(&eq->sel);
+  }
   return 0;
 }
 
