@@ -1,0 +1,86 @@
+r16
+======
+- Support mtree(5)
+- Add mtree(8) command
+
+r15
+======
+- Sync with FreeBSD
+- Sync HAMMER2 with DragonFly BSD
+- Sync exFAT with https://github.com/relan/exfat
+- Apply shellcheck(1)
+
+r14
+======
+- Introduce *.d files
+
+r13
+======
+- Sync with FreeBSD
+- Sync HAMMER2 with DragonFly BSD
+- Remove v7fs (Version 7 Unix file system) support
+- Enable gcc -O2
+- Misc updates
+
+r12
+======
+- Sync HAMMER2 with DragonFly BSD
+- Fix make -jx build
+
+r11
+======
+- Sync with FreeBSD
+- Sync HAMMER2 with DragonFly BSD
+- exFAT: Fix image creation with extra-directory
+
+r10
+======
+- Sync HAMMER2 with DragonFly BSD
+
+r9
+======
+- Silence compile warnings
+- Sync with FreeBSD
+- Sync HAMMER2 with DragonFly BSD
+
+r8
+======
+- Sync with FreeBSD
+- Sync HAMMER2 with DragonFly BSD
+- Sync with https://github.com/relan/exfat
+- Add script/image_creat_test.sh
+- Add script/image_mount_test.sh
+
+r7
+======
+- Support FreeBSD, NetBSD, OpenBSD, DragonFly BSD
+- Sync HAMMER2 with DragonFly BSD
+
+r6
+======
+- Add build option USE_HAMMER2=0
+- Add script/build_test.sh
+
+r5
+======
+- Add top level src directory
+- Sync with FreeBSD
+- Sync with https://github.com/relan/exfat
+
+r4
+======
+- Port HAMMER2 support from DragonFly BSD makefs(8)
+
+r3
+======
+- Add exFAT support using https://github.com/relan/exfat
+- Add build option USE_EXFAT=0
+
+r2
+======
+- Port v7fs (Version 7 Unix file system) support from NetBSD makefs(8)
+
+r1
+======
+- Initial release
+- Sync with FreeBSD https://cgit.freebsd.org/src/commit/?id=835ee05f3c754d905099a3500f421dc01fab028f

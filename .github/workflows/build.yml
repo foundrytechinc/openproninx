@@ -16,12 +16,12 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y bmake clang lld llvm qemu-system-x86 ovmf libssl-dev uuid-dev
-      - name: Build FreeBSD makefs
+      - name: Build bundled FreeBSD makefs
+        # makefs/ is vendored in-tree (superblock at 65536 — mkufs requires it)
         run: |
-          git clone https://github.com/kusumi/makefs /tmp/makefs
-          git -C /tmp/makefs checkout 607449619ef5f85b6a2b282e16182e342fdebeaa
-          make -C /tmp/makefs USE_HAMMER2=0 USE_EXFAT=0
-          sudo install -m 0755 /tmp/makefs/src/usr.sbin/makefs/makefs /usr/local/bin/makefs
+          make -C makefs USE_HAMMER2=0 USE_EXFAT=0 -j"$(nproc)"
+          test -x makefs/src/usr.sbin/makefs/makefs
+          sudo install -m 0755 makefs/src/usr.sbin/makefs/makefs /usr/local/bin/makefs
       - name: Build and boot-smoke images without mutating sources
         run: bmake ci
       - name: Publish evaluation images
@@ -52,7 +52,8 @@ jobs:
         with:
           usesh: true
           run: |
-            makefs -t ffs -s 32m -o version=2,bsize=8192,fsize=1024,label=FNU-ROOT obj/fnu-root.ufs obj/root
+            # ROOT_MB=256 in Makefile; leave headroom
+            makefs -t ffs -s 320m -o version=2,bsize=8192,fsize=1024,label=FNU-ROOT obj/fnu-root.ufs obj/root
             fsck_ffs -n obj/fnu-root.ufs
       - name: Publish the UFS2 root
         uses: actions/upload-artifact@v4

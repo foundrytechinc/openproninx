@@ -30,3 +30,19 @@ _*
 
 # reference sources, read only, never built
 refs/
+
+# third-party downloads not part of the build
+third_party/src/curl-*/
+third_party/src/nano-*/
+
+# nginx FNU port: keep config headers, drop build products
+third_party/src/nginx-1.27.4/objs/**/*.o
+third_party/src/nginx-1.27.4/objs/nginx
+third_party/src/nginx-1.27.4/objs/autoconf.err
+
+# joe: unicode tables for regenerating unicat (not needed to build)
+third_party/src/joe-releases-joe-4.8/joe/util/
+
+# bundled makefs: build the binary locally (makefs/.gitignore covers *.o)
+makefs/src/usr.sbin/makefs/makefs
+
