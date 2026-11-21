@@ -650,20 +650,7 @@ ROOT_TREE=${OBJDIR}/root
 ROOT_UUID=${OBJDIR}/root.uuid
 KEYMAPS!=cd ${.CURDIR} && find share/vt/keymaps -type f -print
 RC_FILES!=cd ${.CURDIR} && find etc/rc.d -type f -print
-# third-party ports (nginx, joe) — built out-of-tree, installed with the root
-NGINX_BIN=${OBJDIR}/install/nginx
-JOE_RC_FILES!=cd ${.CURDIR} && find etc/joe -type f -print
-JOE_BIN=${OBJDIR}/install/joe
-NGINX_SRCS!=cd ${.CURDIR}/third_party/src/nginx-1.27.4 && find src objs/ngx_modules.c fnu-shim -type f \( -name '*.c' -o -name '*.h' \) -print 2>/dev/null || true
-${OBJDIR}/install/nginx: third_party/src/nginx-1.27.4/objs/nginx
-	@mkdir -p ${.TARGET:H}
-	${OBJCOPY} --strip-debug ${.ALLSRC} ${.TARGET}
-third_party/src/nginx-1.27.4/objs/nginx: ${MAKEFILE_DEP}
-	@cd ${.CURDIR}/third_party/src/nginx-1.27.4 && ${MAKE} -f objs/Makefile objs/nginx
-${OBJDIR}/install/joe: ${MAKEFILE_DEP}
-	@mkdir -p ${.TARGET:H}
-	sh ${.CURDIR}/tools/build-joe.sh ${.TARGET}
-${OBJDIR}/root.stamp: ${INSTALL_BINS} ${INSTALL_TESTS} tests/run ${MKIMG} ${MAKEFILE_DEP} etc/filesystems etc/master.passwd etc/passwd etc/group etc/doas.conf etc/motd etc/profile etc/shrc etc/myname etc/hosts etc/shells etc/rc.conf etc/init.conf etc/users.conf etc/sysctl.conf etc/syslog.conf etc/fnupkg.conf ${RC_FILES} ${SKEL_FILES} ${KEYMAPS} share/misc/units.lib ${BASE_LIST} ${REPO_ONLY_LIST} ${DEMO_PKGS} ${NGINX_BIN} ${JOE_BIN} etc/nginx/nginx.conf etc/nginx/mime.types share/nginx/html/index.html ${JOE_RC_FILES}
+${OBJDIR}/root.stamp: ${INSTALL_BINS} ${INSTALL_TESTS} tests/run ${MKIMG} ${MAKEFILE_DEP} etc/filesystems etc/master.passwd etc/passwd etc/group etc/doas.conf etc/motd etc/profile etc/shrc etc/myname etc/hosts etc/shells etc/rc.conf etc/init.conf etc/users.conf etc/sysctl.conf etc/syslog.conf etc/fnupkg.conf ${RC_FILES} ${SKEL_FILES} ${KEYMAPS} share/misc/units.lib ${BASE_LIST} ${REPO_ONLY_LIST} ${DEMO_PKGS}
 	rm -rf ${ROOT_TREE}
 	mkdir -p ${ROOT_TREE}/usr/bin ${ROOT_TREE}/etc ${ROOT_TREE}/dev ${ROOT_TREE}/mnt ${ROOT_TREE}/data ${ROOT_TREE}/tmp
 	mkdir -p ${ROOT_TREE}/var/run ${ROOT_TREE}/var/log/svc ${ROOT_TREE}/var/tmp ${ROOT_TREE}/var/empty ${ROOT_TREE}/var/db
@@ -683,9 +670,6 @@ ${OBJDIR}/root.stamp: ${INSTALL_BINS} ${INSTALL_TESTS} tests/run ${MKIMG} ${MAKE
 	# non-base tools ship as .fpkg AND are pre-registered so fnupkg remove works
 	rm -rf ${FNUPKG_REPO}
 	sh ${.CURDIR}/tools/mkpackages.sh ${OBJDIR}/install ${FNUPKG_REPO} ${BASE_LIST} '${BIN_LINKS}' ${REPO_ONLY_LIST}
-	# full packages for ports (configs included) + refresh index
-	sh ${.CURDIR}/tools/mkportpkg.sh nginx ${FNUPKG_REPO}
-	sh ${.CURDIR}/tools/mkportpkg.sh joe ${FNUPKG_REPO}
 	sh ${.CURDIR}/tools/mkrepo.sh ${FNUPKG_REPO}
 	mkdir -p ${ROOT_TREE}/usr/share/fnupkg/repo
 	install -m 0644 ${FNUPKG_REPO}/*.fpkg ${FNUPKG_REPO}/index ${ROOT_TREE}/usr/share/fnupkg/repo/
