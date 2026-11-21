@@ -76,6 +76,7 @@ struct kevent {
 #define NOTE_USECONDS 0x00000002
 #define NOTE_NSECONDS 0x00000003
 #define NOTE_ABSTIME 0x00000010
+#define NOTE_TRIGGER 0x00000001 /* EVFILT_USER */
 
 struct timespec;
 

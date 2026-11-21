@@ -369,6 +369,7 @@ LIBS.${p}=util crypt
 .endfor
 LIBS.moused=m util
 LIBS.cksum=crypt
+LIBS.fnupkg=crypt
 LIBS.ping=m
 LIBS.jot=m
 LIBS.seq=m
@@ -546,7 +547,15 @@ ${OBJDIR}/${src:R}: ${src} ${USER_CRT} ${LIBS.${src:T:R}:@l@${LIB_${l}}@} ${LIBC
 .endfor
 
 SETUID_BINS=chpass doas passwd ping su
-BIN_LINKS=[=test sha224=cksum sha256=cksum sha384=cksum sha512=cksum whereis=which machine=arch uptime=w groups=id whoami=id egrep=grep fgrep=grep zgrep=grep zegrep=grep zfgrep=grep chgrp=chmod chown=chmod chflags=chmod halt=reboot hibernate=zzz adduser=useradd groupdel=groupadd groupmod=groupadd chsh=chpass chfn=chpass man=fnuman poweroff=reboot health=services tar=pax cpio=pax mkfifo=mknod ex=vi od=hexdump uncompress=compress zcat=compress gzip=compress gunzip=compress gzcat=compress
+BIN_LINKS=[=test sha224=cksum sha256=cksum sha384=cksum sha512=cksum whereis=which machine=arch uptime=w groups=id whoami=id egrep=grep fgrep=grep zgrep=grep zegrep=grep zfgrep=grep chgrp=chmod chown=chmod chflags=chmod halt=reboot hibernate=zzz adduser=useradd groupdel=groupadd groupmod=groupadd chsh=chpass chfn=chpass man=fnuman poweroff=reboot health=services tar=pax cpio=pax mkfifo=mknod ex=vi od=hexdump uncompress=compress zcat=compress gzip=compress gunzip=compress gzcat=compress fpkg=fnupkg
+# names that stay in the image (everything else is a .fpkg in the local repo)
+BASE_LIST=${.CURDIR}/tools/fnupkg-base.list
+# built as .fpkg only — not installed in the image (fnupkg install)
+REPO_ONLY_LIST=${.CURDIR}/tools/fnupkg-repo-only.list
+REPO_ONLY_NAMES!=tr -d ' \t' < ${REPO_ONLY_LIST} | grep -v '^$$' | tr '\n' ' '
+BASE_NAMES!=tr -d ' \t' < ${BASE_LIST} | grep -v '^$$' | tr '\n' ' '
+DEMO_PKGS!=cd ${.CURDIR} && find share/fnupkg/repo -name '*.fpkg' -print 2>/dev/null
+FNUPKG_REPO=${OBJDIR}/fnupkg-repo
 INSTALL_BINS=
 .for src in ${USER_SRCS}
 INSTALL_BINS+=${OBJDIR}/install/${src:T:R}
@@ -641,7 +650,20 @@ ROOT_TREE=${OBJDIR}/root
 ROOT_UUID=${OBJDIR}/root.uuid
 KEYMAPS!=cd ${.CURDIR} && find share/vt/keymaps -type f -print
 RC_FILES!=cd ${.CURDIR} && find etc/rc.d -type f -print
-${OBJDIR}/root.stamp: ${INSTALL_BINS} ${INSTALL_TESTS} tests/run ${MKIMG} ${MAKEFILE_DEP} etc/filesystems etc/master.passwd etc/passwd etc/group etc/doas.conf etc/motd etc/profile etc/shrc etc/myname etc/hosts etc/shells etc/rc.conf etc/init.conf etc/users.conf etc/sysctl.conf etc/syslog.conf ${RC_FILES} ${SKEL_FILES} ${KEYMAPS} share/misc/units.lib
+# third-party ports (nginx, joe) — built out-of-tree, installed with the root
+NGINX_BIN=${OBJDIR}/install/nginx
+JOE_RC_FILES!=cd ${.CURDIR} && find etc/joe -type f -print
+JOE_BIN=${OBJDIR}/install/joe
+NGINX_SRCS!=cd ${.CURDIR}/third_party/src/nginx-1.27.4 && find src objs/ngx_modules.c fnu-shim -type f \( -name '*.c' -o -name '*.h' \) -print 2>/dev/null || true
+${OBJDIR}/install/nginx: third_party/src/nginx-1.27.4/objs/nginx
+	@mkdir -p ${.TARGET:H}
+	${OBJCOPY} --strip-debug ${.ALLSRC} ${.TARGET}
+third_party/src/nginx-1.27.4/objs/nginx: ${MAKEFILE_DEP}
+	@cd ${.CURDIR}/third_party/src/nginx-1.27.4 && ${MAKE} -f objs/Makefile objs/nginx
+${OBJDIR}/install/joe: ${MAKEFILE_DEP}
+	@mkdir -p ${.TARGET:H}
+	sh ${.CURDIR}/tools/build-joe.sh ${.TARGET}
+${OBJDIR}/root.stamp: ${INSTALL_BINS} ${INSTALL_TESTS} tests/run ${MKIMG} ${MAKEFILE_DEP} etc/filesystems etc/master.passwd etc/passwd etc/group etc/doas.conf etc/motd etc/profile etc/shrc etc/myname etc/hosts etc/shells etc/rc.conf etc/init.conf etc/users.conf etc/sysctl.conf etc/syslog.conf etc/fnupkg.conf ${RC_FILES} ${SKEL_FILES} ${KEYMAPS} share/misc/units.lib ${BASE_LIST} ${REPO_ONLY_LIST} ${DEMO_PKGS} ${NGINX_BIN} ${JOE_BIN} etc/nginx/nginx.conf etc/nginx/mime.types share/nginx/html/index.html ${JOE_RC_FILES}
 	rm -rf ${ROOT_TREE}
 	mkdir -p ${ROOT_TREE}/usr/bin ${ROOT_TREE}/etc ${ROOT_TREE}/dev ${ROOT_TREE}/mnt ${ROOT_TREE}/data ${ROOT_TREE}/tmp
 	mkdir -p ${ROOT_TREE}/var/run ${ROOT_TREE}/var/log/svc ${ROOT_TREE}/var/tmp ${ROOT_TREE}/var/empty ${ROOT_TREE}/var/db
@@ -651,14 +673,42 @@ ${OBJDIR}/root.stamp: ${INSTALL_BINS} ${INSTALL_TESTS} tests/run ${MKIMG} ${MAKE
 	chmod 0700 ${ROOT_TREE}/root
 	: > ${ROOT_TREE}/var/log/wtmp
 	chmod 0644 ${ROOT_TREE}/var/log/wtmp
-	for b in ${INSTALL_BINS:N*/chpass:N*/doas:N*/passwd:N*/ping:N*/su}; do install -m 0555 ${.CURDIR}/$$b ${ROOT_TREE}/usr/bin/; done
+	for b in ${INSTALL_BINS:N*/chpass:N*/doas:N*/passwd:N*/ping:N*/su}; do \
+		bn=$${b##*/}; \
+		case " ${REPO_ONLY_NAMES} " in *" $$bn "*) continue ;; esac; \
+		install -m 0555 ${.CURDIR}/$$b ${ROOT_TREE}/usr/bin/; \
+	done
 	for b in ${SETUID_BINS}; do install -m 4555 ${.CURDIR}/${OBJDIR}/install/$$b ${ROOT_TREE}/usr/bin/; done
 	for l in ${BIN_LINKS}; do ln ${ROOT_TREE}/usr/bin/$${l#*=} ${ROOT_TREE}/usr/bin/$${l%=*}; done
+	# non-base tools ship as .fpkg AND are pre-registered so fnupkg remove works
+	rm -rf ${FNUPKG_REPO}
+	sh ${.CURDIR}/tools/mkpackages.sh ${OBJDIR}/install ${FNUPKG_REPO} ${BASE_LIST} '${BIN_LINKS}' ${REPO_ONLY_LIST}
+	# full packages for ports (configs included) + refresh index
+	sh ${.CURDIR}/tools/mkportpkg.sh nginx ${FNUPKG_REPO}
+	sh ${.CURDIR}/tools/mkportpkg.sh joe ${FNUPKG_REPO}
+	sh ${.CURDIR}/tools/mkrepo.sh ${FNUPKG_REPO}
+	mkdir -p ${ROOT_TREE}/usr/share/fnupkg/repo
+	install -m 0644 ${FNUPKG_REPO}/*.fpkg ${FNUPKG_REPO}/index ${ROOT_TREE}/usr/share/fnupkg/repo/
+	mkdir -p ${ROOT_TREE}/var/db/fnupkg/installed ${ROOT_TREE}/var/db/fnupkg/files
+	# seed local index cache (repo 0 = first line of /etc/fnupkg.conf)
+	mkdir -p ${ROOT_TREE}/var/db/fnupkg/repos/0
+	install -m 0644 ${ROOT_TREE}/usr/share/fnupkg/repo/index ${ROOT_TREE}/var/db/fnupkg/repos/0/index
+	printf '%s\n' /usr/share/fnupkg/repo > ${ROOT_TREE}/var/db/fnupkg/repos/0/base
+	if [ -d ${FNUPKG_REPO}/db/installed ]; then \
+		for f in ${FNUPKG_REPO}/db/installed/*; do \
+			[ -f "$$f" ] && install -m 0644 "$$f" ${ROOT_TREE}/var/db/fnupkg/installed/; \
+		done; \
+	fi
+	if [ -d ${FNUPKG_REPO}/db/files ]; then \
+		for f in ${FNUPKG_REPO}/db/files/*; do \
+			[ -f "$$f" ] && install -m 0644 "$$f" ${ROOT_TREE}/var/db/fnupkg/files/; \
+		done; \
+	fi
 	mkdir -p ${ROOT_TREE}/usr/tests
 	for b in ${INSTALL_TESTS}; do install -m 0555 ${.CURDIR}/$$b ${ROOT_TREE}/usr/tests/; done
 	install -m 0555 ${.CURDIR}/tests/run ${ROOT_TREE}/usr/tests/run
 	${MKIMG} -G > ${ROOT_UUID}
-	install -m 0644 ${.CURDIR}/etc/filesystems ${.CURDIR}/etc/passwd ${.CURDIR}/etc/group ${.CURDIR}/etc/motd ${.CURDIR}/etc/profile ${.CURDIR}/etc/shrc ${.CURDIR}/etc/myname ${.CURDIR}/etc/hosts ${.CURDIR}/etc/shells ${.CURDIR}/etc/rc.conf ${.CURDIR}/etc/init.conf ${.CURDIR}/etc/users.conf ${.CURDIR}/etc/sysctl.conf ${.CURDIR}/etc/syslog.conf ${ROOT_TREE}/etc/
+	install -m 0644 ${.CURDIR}/etc/filesystems ${.CURDIR}/etc/passwd ${.CURDIR}/etc/group ${.CURDIR}/etc/motd ${.CURDIR}/etc/profile ${.CURDIR}/etc/shrc ${.CURDIR}/etc/myname ${.CURDIR}/etc/hosts ${.CURDIR}/etc/shells ${.CURDIR}/etc/rc.conf ${.CURDIR}/etc/init.conf ${.CURDIR}/etc/users.conf ${.CURDIR}/etc/sysctl.conf ${.CURDIR}/etc/syslog.conf ${.CURDIR}/etc/fnupkg.conf ${ROOT_TREE}/etc/
 	printf 'from=/dev/part-by-label/fnu-swap type=swap at=boot\n' >> ${ROOT_TREE}/etc/filesystems
 	printf 'from=/dev/part-by-uuid/%s on=/ type=ufs2 mode=rw at=boot\n' "$$(cat ${ROOT_UUID})" >> ${ROOT_TREE}/etc/filesystems
 	mkdir -p ${ROOT_TREE}/etc/rc.d
@@ -676,11 +726,14 @@ ${OBJDIR}/root.stamp: ${INSTALL_BINS} ${INSTALL_TESTS} tests/run ${MKIMG} ${MAKE
 	install -m 0444 ${.CURDIR}/share/misc/units.lib ${ROOT_TREE}/usr/share/misc/units.lib
 	touch ${OBJDIR}/root.stamp
 # ramdisk and root partition
-ROOT_MB=64
+# ROOT_MB is the writable fnu-root (room for packages under /usr);
+# RAMDISK_MB is the fallback FNU-LIVE image on the ESP — keep it small.
+ROOT_MB=256
+RAMDISK_MB?=96
 SWAP_MB?=256
 ${FS_IMG}: ${OBJDIR}/root.stamp ${MKIMG} tools/mkufs.sh ${MAKEFILE_DEP}
 	@mkdir -p ${.TARGET:H}
-	sh ${.CURDIR}/tools/mkufs.sh ${MKIMG} ${.TARGET} ${ROOT_MB} FNU-LIVE ${ROOT_TREE}
+	sh ${.CURDIR}/tools/mkufs.sh ${MKIMG} ${.TARGET} ${RAMDISK_MB} FNU-LIVE ${ROOT_TREE}
 
 ${KERNEL_BOOT}: ${KERNEL}
 	${OBJCOPY} --strip-debug ${KERNEL} ${.TARGET}

@@ -1,0 +1,2 @@
+greet|0.3|any|greet-0.3.fpkg|cc238f247bb2e6e17538f8c454949171d0365a09267fbee30653d16046e60c0f|10240|hello|Docs that depend on hello
+hello|1.0.0|any|hello-1.0.0.fpkg|b88b86fb1809cf20958b340a0b38e55fb10bf65c88743efa2cfefeef706b6873|10240|-|Hello world demo package
