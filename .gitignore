@@ -27,6 +27,7 @@ _*
 !etc/rc.d/
 !include/**/_*.h
 !lib/libc/**/_*
+!makefs/**/_*.h
 
 # reference sources, read only, never built
 refs/
